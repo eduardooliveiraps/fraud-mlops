@@ -7,7 +7,7 @@ Portfolio project: fraud scoring service with a train → gate → deploy → mo
 - Keep it simple. Do NOT add tools, libraries, or features beyond the current task.
 - One task at a time. Do only what is asked, then stop and summarize.
 - Python 3.11, code in `src/fraud/`, tests in `tests/`, config in `configs/`.
-- Never commit data (`data/`), `mlflow.db`, or `mlruns/`. The BAF dataset is non-commercial licensed.
+- BAF is CC BY-NC-SA 4.0. Never commit data (`data/`), derived data, model files, `mlflow.db` or `mlruns/`. make_synthetic must not use real data values.
 - Explain the "why" briefly; the owner is learning Kubernetes/MLOps.
 
 ## Commands
