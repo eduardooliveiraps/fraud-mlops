@@ -25,6 +25,11 @@ lint:
 	.venv/bin/ruff check src tests notebooks
 test:
 	.venv/bin/pytest -q
+# Train on the real data, register a version in the cluster's MLflow, run the gate.
+# MLFLOW_DISABLE_AGENT_HINT silences an MLflow startup message.
+train:
+	MLFLOW_TRACKING_URI=$(MLFLOW_URL) MLFLOW_DISABLE_AGENT_HINT=1 \
+		.venv/bin/python -m fraud.train --config configs/config.yaml
 data:
 	.venv/bin/python -m fraud.data --config configs/config.yaml
 
@@ -57,4 +62,4 @@ mlflow-check:
 	curl -fsS -X POST -H "Content-Type: application/json" -d '{"max_results": 5}' \
 		$(MLFLOW_URL)/api/2.0/mlflow/experiments/search && echo
 
-.PHONY: install lock lint test data tools cluster-up cluster-down mlflow-up mlflow-check
+.PHONY: install lock lint test data train tools cluster-up cluster-down mlflow-up mlflow-check

@@ -25,6 +25,7 @@ make tools         # pinned kind + kubectl into ~/.local/bin (checksums verified
 make cluster-up    # one-node kind cluster "fraud" (~1.2 GiB RAM)
 make mlflow-up     # MLflow server + registry; UI at http://localhost:5000
 make mlflow-check  # health check + list experiments
+make train         # validate -> train -> register in MLflow -> gate (moves @champion if better)
 make cluster-down  # delete the cluster; MLflow data in .state/mlflow/ is kept
 ```
 
@@ -55,8 +56,18 @@ Aggregates from `notebooks/01_eda.py` (1,000,000 applications, 32 columns, 1.10%
 - **Metrics**: recall at 5% false-positive rate (the BAF paper's benchmark) and PR-AUC
   (average precision). The decision threshold minimises an assumed cost of 20 per missed fraud
   and 1 per false alarm (`configs/config.yaml`).
-- **Baseline** (rank by `credit_risk_score` alone, test months): recall at 5% FPR **0.198**,
-  PR-AUC **0.037** (a random ranking gives 0.05 and 0.014).
+
+### Results (test months 6-7, 205,011 applications, 1.40% fraud)
+
+| Model | Recall at 5% FPR | PR-AUC |
+|-------|-----------------:|-------:|
+| Random ranking | 0.050 | 0.014 |
+| `credit_risk_score` alone | 0.198 | 0.037 |
+| **LightGBM** (`fraud-lgbm` v1, champion) | **0.553** | **0.196** |
+
+At the cost-based threshold (0.0287, chosen on month 5) the model flags 6.1% of legitimate
+applications and catches 58.7% of frauds (precision 12.1%). Expected cost: 176 per 1,000
+applications, against 280 for flagging nothing. Training takes ~47 s and ~1.3 GB RAM.
 
 
 - Uses the **Base** variant of the Bank Account Fraud (BAF) Dataset Suite: Jesus et al.,

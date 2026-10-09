@@ -65,6 +65,12 @@ def _drop(section: str, key: str):
         (_set("evaluation", "target_fpr", 1.0), "target_fpr must be in \\(0, 1\\)"),
         (_set("evaluation", "cost_false_negative", -1), "Costs must be > 0"),
         (_drop("evaluation", "cost_false_positive"), "missing keys"),
+        (_set("train", "seed", "42"), "'train.seed' must be an integer"),
+        (_set("train", "n_jobs", 0), "n_jobs and early_stopping_rounds must be >= 1"),
+        (_set("train", "params", [1]), "'train.params' must be a mapping"),
+        (_set("mlflow", "model_name", ""), "'mlflow.model_name' must be a non-empty string"),
+        (_set("gate", "min_recall_gain", -0.1), "Gate margins must be >= 0"),
+        (_set("monitoring", "psi_bins", 1), "psi_bins must be >= 2"),
     ],
 )
 def test_invalid_config(config_dict, write_config, edit, error):

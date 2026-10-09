@@ -15,6 +15,7 @@ dependencies = [
     "lightgbm>=4.7,<5",
     "mlflow>=3.16.1,<3.17",  # must match the server image in k8s/mlflow; bump both together
     "pyyaml>=6.0,<7",
+    "pandera[pandas]>=0.33.1,<0.34",
 ]
 
 [project.optional-dependencies]
@@ -25,6 +26,9 @@ where = ["src"]
 
 [tool.ruff]
 line-length = 100
+
+[tool.ruff.lint]
+extend-select = ["E501"]  # enforce line-length (not in ruff's default rules)
 
 [tool.ruff.lint.per-file-ignores]
 # Bad config file content is a ValueError (bad value), not a TypeError (caller bug).

@@ -8,7 +8,7 @@ Status: todo | design | in progress | review | done. One part in progress at a t
 | 1 | Foundations: config, pinned deps, logging, basic CI | done | 0 |
 | 2 | Cluster + MLflow spike (RAM check) | done | 1 |
 | 3 | Evaluation core: time split, metrics, threshold | done | 1 |
-| 4 | Training + gate (local, against cluster MLflow) | todo | 2, 3 |
+| 4 | Training + gate (local, against cluster MLflow) | done | 2, 3 |
 | 5 | Training Job / CronJob on Kubernetes | todo | 4 |
 | 6 | Scoring API (local) | todo | 3, 4 |
 | 7 | Serving on Kubernetes: probes, HPA, rollback, load test | todo | 5, 6 |
@@ -29,15 +29,22 @@ Status: todo | design | in progress | review | done. One part in progress at a t
   (may be `inf` = flag nothing). `evaluate(y_test, s_test, threshold, cfg.evaluation) ->`
   `{pr_auc, recall_at_fpr, precision, recall, fpr, cost_per_1k}`; flagged = score >= threshold.
   The gate compares `recall_at_fpr` and `pr_auc`. Baseline to beat: 0.198 / 0.037 (test months).
-- **Features** (`fraud.features`): one preprocessing function, used by both training and serving.
 - **Cluster** (`make tools cluster-up`): kind cluster `fraud`, kubectl context `kind-fraud`,
   namespace `fraud`. `make cluster-down` deletes it; MLflow data in `.state/mlflow/` survives.
 - **MLflow** (`make mlflow-up`): `http://mlflow.fraud.svc.cluster.local:5000` in the cluster,
   `http://localhost:5000` from WSL/Windows. Server and client are both mlflow 3.16.1.
-- **Training**: in = Parquet path + config + `MLFLOW_TRACKING_URI`.
-  Out = registered version of `fraud-lgbm` with metrics, threshold and a reference score histogram.
-- **Gate**: compares the new version and `@champion` on the same test months. Moves `champion`
-  only if it wins by the config margin. Decision is stored as a version tag.
+- **Validation** (`fraud.validate`): `validate(df)` (Pandera, strict). Errors list column, check
+  and failure count only, never values.
+- **Features** (`fraud.features`): `prepare_features(df) -> X` (29 features, fixed category
+  levels) and `score(model, df) -> fraud probabilities`. Used by training, gate and serving.
+- **Drift reference** (`fraud.drift`): `quantile_edges`, `bin_fractions`. Serving adds PSI here.
+- **Training** (`python -m fraud.train --config <yaml>`, `make train`): in = Parquet + config +
+  `MLFLOW_TRACKING_URI` (required). Out = new version of `fraud-lgbm`; run has params, `valid_*`
+  and `test_*` metrics, `threshold`. Model metadata: `threshold`, `features`, `reference_edges`,
+  `reference_fractions` (PSI reference = test-month scores). Version tag `data_sha256`.
+- **Gate** (`fraud.gate.run_gate`): re-scores candidate and `@champion` on the same test months;
+  promotes if recall gain >= `gate.min_recall_gain` and PR-AUC drop <= `gate.max_pr_auc_drop`.
+  Version tags `gate_decision`, `gate_reason`, `gate_compared_to`. Rejection is not an error.
 - **Serving**: in = `MODEL_URI` (pinned version, e.g. `models:/fraud-lgbm/7`) + `MLFLOW_TRACKING_URI`.
   Out = `/score`, `/health`, `/metrics`.
 - **Metrics** (serving -> monitoring): `fraud_requests_total{status}`,
@@ -52,6 +59,7 @@ during load tests.
 |-----------|-----------------|----------|
 | kind node, whole cluster idle (incl. MLflow) | - | 1.2 GiB |
 | MLflow server (1 worker, job runner off) | 250m, 384Mi / 1 CPU, 1Gi | ~350 MiB idle, 355 MiB peak during a run |
+| Training, 1M rows, 4 threads (local, part 4) | (Job limits set in part 5) | 1.3 GB peak RSS, 47 s |
 
 Measured with `docker stats fraud-control-plane` and the pod's cgroup `memory.current`/`memory.peak`.
 Rebuilding the cluster from scratch (`cluster-down`, `cluster-up`, `mlflow-up`) takes ~2 min.
@@ -113,3 +121,19 @@ Format: date - decision - why - alternatives considered.
   row-level data; they justify the split. Alt: keep EDA output local only.
 - 2026-10-09 - Fraud rate rises from ~0.9% (months 2-3) to 1.47% (month 7) - PR-AUC depends on
   the fraud rate, so it is never compared across different months; the gate uses fixed test months.
+- 2026-10-09 - Threshold, feature list and PSI reference stored in the model's MLflow metadata -
+  Serving needs one URI, and the threshold can never be paired with the wrong model.
+  Alt: separate run artifacts.
+- 2026-10-09 - The gate re-scores the champion on today's test data - Stored metrics may come from
+  different data or config; re-scoring both is the only fair comparison. It also checks that
+  the registered model loads and scores. Alt: compare stored metrics.
+- 2026-10-09 - `MLFLOW_TRACKING_URI` from the environment only, required - Without it MLflow
+  silently writes to `./mlruns`; the address is environment-specific (laptop vs cluster).
+- 2026-10-09 - Fixed LightGBM params + early stopping on valid PR-AUC; no tuning, no class
+  weights - The project is about the platform; costs are handled by the threshold.
+  Determinism: fixed seed, threads, `deterministic=True`. Alt: Optuna search.
+- 2026-10-09 - Features: drop `month` (time marker) and `device_fraud_count` (constant); keep `-1`
+  missing markers (trees split on them); fixed category levels. Alt: -1 -> NaN.
+- 2026-10-09 - Pandera 0.33.1 (0.34 was days old); validation errors summarised without values -
+  Pandera's own report contains the failing values, which would be row-level data in logs.
+- 2026-10-09 - Ruff E501 enabled - The declared 100-char limit is now checked by `make lint`.

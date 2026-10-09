@@ -15,3 +15,30 @@ evaluation:
   # Assumed relative costs: a missed fraud costs 20x a false alarm (manual review).
   cost_false_negative: 20.0
   cost_false_positive: 1.0
+
+train:
+  seed: 42
+  n_jobs: 4  # fixed thread count: part of reproducibility (and leaves CPU for the cluster)
+  early_stopping_rounds: 100  # on valid PR-AUC
+  # LGBMClassifier hyperparameters (fixed, no search). Seed, threads, metric and
+  # determinism flags are set by the code and are not allowed here.
+  params:
+    n_estimators: 2000
+    learning_rate: 0.03
+    num_leaves: 31
+    min_child_samples: 200
+    subsample: 0.8
+    subsample_freq: 1
+    colsample_bytree: 0.8
+
+mlflow:  # the server address comes from the MLFLOW_TRACKING_URI environment variable
+  experiment: fraud-baf
+  model_name: fraud-lgbm
+  champion_alias: champion
+
+gate:  # the new model replaces the champion only if, on the same test months:
+  min_recall_gain: 0.005  # recall at target_fpr improves by at least this much
+  max_pr_auc_drop: 0.005  # and PR-AUC drops by at most this much
+
+monitoring:
+  psi_bins: 10  # quantile bins of test-month scores, the PSI reference for serving

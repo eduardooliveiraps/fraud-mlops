@@ -32,6 +32,16 @@ NUMERIC_COLS = {
     "device_fraud_count": "int64",
 }
 
+# Numeric columns that are 0/1 flags.
+BINARY_COLS = [
+    "email_is_free",
+    "phone_home_valid",
+    "phone_mobile_valid",
+    "has_other_cards",
+    "foreign_request",
+    "keep_alive_session",
+]
+
 # Categorical feature columns -> allowed levels (string dtype in pandas).
 CATEGORICAL_COLS = {
     "payment_type": ["AA", "AB", "AC", "AD", "AE"],

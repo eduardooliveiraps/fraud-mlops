@@ -44,10 +44,52 @@ class EvaluationConfig:
 
 
 @dataclass(frozen=True)
+class TrainConfig:
+    seed: int
+    n_jobs: int
+    early_stopping_rounds: int
+    params: dict[str, Any]  # checked against LightGBM in fraud.train
+
+    def __post_init__(self) -> None:
+        if self.n_jobs < 1 or self.early_stopping_rounds < 1:
+            raise ValueError("n_jobs and early_stopping_rounds must be >= 1")
+
+
+@dataclass(frozen=True)
+class MlflowConfig:
+    experiment: str
+    model_name: str
+    champion_alias: str
+
+
+@dataclass(frozen=True)
+class GateConfig:
+    min_recall_gain: float
+    max_pr_auc_drop: float
+
+    def __post_init__(self) -> None:
+        if self.min_recall_gain < 0 or self.max_pr_auc_drop < 0:
+            raise ValueError("Gate margins must be >= 0")
+
+
+@dataclass(frozen=True)
+class MonitoringConfig:
+    psi_bins: int
+
+    def __post_init__(self) -> None:
+        if self.psi_bins < 2:
+            raise ValueError(f"psi_bins must be >= 2, got {self.psi_bins}")
+
+
+@dataclass(frozen=True)
 class Config:
     data: DataConfig
     split: SplitConfig
     evaluation: EvaluationConfig
+    train: TrainConfig
+    mlflow: MlflowConfig
+    gate: GateConfig
+    monitoring: MonitoringConfig
 
 
 def _mapping(value: Any, name: str, keys: set[str]) -> dict[str, Any]:
@@ -77,6 +119,18 @@ def _int_list(value: Any, name: str) -> tuple[int, ...]:
     return tuple(value)
 
 
+def _int(value: Any, name: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"Config '{name}' must be an integer, got {value!r}")
+    return value
+
+
+def _str(value: Any, name: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"Config '{name}' must be a non-empty string, got {value!r}")
+    return value
+
+
 def _number(value: Any, name: str) -> float:
     if not isinstance(value, int | float) or isinstance(value, bool):
         raise ValueError(f"Config '{name}' must be a number, got {value!r}")
@@ -86,7 +140,8 @@ def _number(value: Any, name: str) -> float:
 def load_config(path: Path) -> Config:
     if not path.is_file():
         raise FileNotFoundError(f"Config file not found: {path}")
-    raw = _mapping(yaml.safe_load(path.read_text()), "<root>", {"data", "split", "evaluation"})
+    sections = {"data", "split", "evaluation", "train", "mlflow", "gate", "monitoring"}
+    raw = _mapping(yaml.safe_load(path.read_text()), "<root>", sections)
     data = _mapping(raw["data"], "data", {"raw_csv", "parquet"})
     split = _mapping(raw["split"], "split", {"train_months", "valid_months", "test_months"})
     evaluation = _mapping(
@@ -94,6 +149,13 @@ def load_config(path: Path) -> Config:
         "evaluation",
         {"target_fpr", "cost_false_negative", "cost_false_positive"},
     )
+    train = _mapping(raw["train"], "train", {"seed", "n_jobs", "early_stopping_rounds", "params"})
+    # Any keys are allowed here; fraud.train checks them against LightGBM.
+    params = train["params"]
+    params = _mapping(params, "train.params", set(params) if isinstance(params, dict) else set())
+    mlflow = _mapping(raw["mlflow"], "mlflow", {"experiment", "model_name", "champion_alias"})
+    gate = _mapping(raw["gate"], "gate", {"min_recall_gain", "max_pr_auc_drop"})
+    monitoring = _mapping(raw["monitoring"], "monitoring", {"psi_bins"})
     return Config(
         data=DataConfig(
             raw_csv=_path(data["raw_csv"], "data.raw_csv"),
@@ -103,4 +165,11 @@ def load_config(path: Path) -> Config:
         evaluation=EvaluationConfig(
             **{k: _number(v, f"evaluation.{k}") for k, v in evaluation.items()}
         ),
+        train=TrainConfig(
+            params=dict(params),
+            **{k: _int(v, f"train.{k}") for k, v in train.items() if k != "params"},
+        ),
+        mlflow=MlflowConfig(**{k: _str(v, f"mlflow.{k}") for k, v in mlflow.items()}),
+        gate=GateConfig(**{k: _number(v, f"gate.{k}") for k, v in gate.items()}),
+        monitoring=MonitoringConfig(psi_bins=_int(monitoring["psi_bins"], "monitoring.psi_bins")),
     )
