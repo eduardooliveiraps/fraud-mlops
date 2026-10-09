@@ -27,6 +27,7 @@ dependencies = [
 dev = [
     "pytest>=9.1,<10",
     "httpx>=0.28,<0.29",  # FastAPI's TestClient
+    "locust>=2.40,<3",  # load test (make loadtest)
     "ruff>=0.16,<0.17",
     "ipykernel>=6,<8",
     "matplotlib>=3.10,<4",

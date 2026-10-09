@@ -1,0 +1,3 @@
+# Values for the official metrics-server chart (version pinned in the Makefile).
+args:
+  - --kubelet-insecure-tls  # kind's kubelets serve self-signed certificates

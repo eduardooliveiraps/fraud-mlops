@@ -6,11 +6,15 @@ KIND_VERSION := v0.33.0
 KIND_SHA256 := aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
 KUBECTL_VERSION := v1.37.1
 KUBECTL_SHA256 := 65691ff77eb6fa44c908b77a1082c9f092c3b9733b5cefabec0d1104890e21a8
+HELM_VERSION := v4.3.0
+HELM_SHA256 := 86584a54def73570558f66f5111cc53dfed56689637ae32c1201205d494f54fb
 
 # Local cluster. --context makes every kubectl call target this cluster, never another one.
 CLUSTER := fraud
 KIND := $(BIN)/kind
 KUBECTL := $(BIN)/kubectl --context kind-$(CLUSTER)
+HELM := $(BIN)/helm --kube-context kind-$(CLUSTER)
+METRICS_SERVER_CHART := 3.14.0
 MLFLOW_URL := http://localhost:5000
 # Unique tag per build: commit id, plus "-dirty" if there are uncommitted changes. Never "latest".
 IMAGE := fraud-mlops
@@ -32,7 +36,7 @@ lock:
 	.venv-lock/bin/pip install -q -e . -c requirements-dev.lock
 	.venv-lock/bin/pip freeze --exclude-editable > requirements.lock && rm -rf .venv-lock
 lint:
-	.venv/bin/ruff check src tests notebooks
+	.venv/bin/ruff check src tests notebooks loadtest
 test:
 	.venv/bin/pytest -q
 # Train on the real data, register a version in the cluster's MLflow, run the gate.
@@ -48,19 +52,28 @@ serve:
 data:
 	.venv/bin/python -m fraud.data --config configs/config.yaml
 
-# $(call install-bin,name,url,sha256): download, verify checksum, then install.
+# $(call install-bin,name,url,sha256): skip if already installed with that checksum,
+# else download (time-limited), verify the checksum, then install.
+CURL := curl -fsSL --retry 3 --connect-timeout 20 --max-time 600
 define install-bin
-	curl -fsSL --retry 3 -o $(BIN)/.$(1).download $(2)
-	echo "$(3)  $(BIN)/.$(1).download" | sha256sum --check --quiet \
-		|| { rm -f $(BIN)/.$(1).download; exit 1; }
-	chmod 0755 $(BIN)/.$(1).download && mv $(BIN)/.$(1).download $(BIN)/$(1)
+	echo "$(3)  $(BIN)/$(1)" | sha256sum --check --quiet 2>/dev/null || { \
+		$(CURL) -o $(BIN)/.$(1).download $(2) \
+		&& echo "$(3)  $(BIN)/.$(1).download" | sha256sum --check --quiet \
+		&& chmod 0755 $(BIN)/.$(1).download && mv $(BIN)/.$(1).download $(BIN)/$(1); \
+	} || { rm -f $(BIN)/.$(1).download; exit 1; }
 endef
 
 tools:
 	mkdir -p $(BIN)
 	$(call install-bin,kind,https://kind.sigs.k8s.io/dl/$(KIND_VERSION)/kind-linux-amd64,$(KIND_SHA256))
 	$(call install-bin,kubectl,https://dl.k8s.io/release/$(KUBECTL_VERSION)/bin/linux/amd64/kubectl,$(KUBECTL_SHA256))
-	$(KIND) version && $(BIN)/kubectl version --client
+	$(BIN)/helm version --short 2>/dev/null | grep -q "^$(HELM_VERSION)+" || { \
+		$(CURL) -o $(BIN)/.helm.tgz https://get.helm.sh/helm-$(HELM_VERSION)-linux-amd64.tar.gz \
+		&& echo "$(HELM_SHA256)  $(BIN)/.helm.tgz" | sha256sum --check --quiet \
+		&& tar -xzf $(BIN)/.helm.tgz -C $(BIN) --strip-components=1 linux-amd64/helm; \
+		STATUS=$$?; rm -f $(BIN)/.helm.tgz; exit $$STATUS; \
+	}
+	$(KIND) version && $(BIN)/kubectl version --client && $(BIN)/helm version --short
 
 # .state/ holds MLflow's database and artifacts on the host, so they outlive the cluster.
 cluster-up:
@@ -96,10 +109,40 @@ train-job:
 	$(KUBECTL) -n fraud logs -l job-name=$$JOB --prefix --tail=-1; \
 	echo "$$JOB: $$STATE"; case "$$STATE" in *Complete*) ;; *) exit 1;; esac
 
+# CPU/memory metrics for `kubectl top` and the HPA (kind does not ship metrics-server).
+metrics-server:
+	$(HELM) upgrade --install metrics-server metrics-server \
+		--repo https://kubernetes-sigs.github.io/metrics-server/ --version $(METRICS_SERVER_CHART) \
+		--namespace kube-system --values k8s/metrics-server/values.yaml --wait --timeout 3m
+
+# Deploy the API with the champion's pinned version, or MODEL_VERSION=<n>. A new model or image
+# is a new ReplicaSet revision, so `make rollback` really brings back the previous model.
+deploy:
+	@export MLFLOW_TRACKING_URI=$(MLFLOW_URL) MLFLOW_DISABLE_AGENT_HINT=1; \
+	URI=$$(.venv/bin/python -m fraud.registry --config configs/config.yaml \
+		$(if $(MODEL_VERSION),--version $(MODEL_VERSION))) || exit 1; \
+	ID=$$(docker image inspect $(IMAGE):$(IMAGE_TAG) --format '{{.Id}}') || exit 1; \
+	echo "Deploying $$URI with image $(IMAGE):$(IMAGE_TAG)"; \
+	sed -e "s|__IMAGE_TAG__|$(IMAGE_TAG)|g" -e "s|__IMAGE_ID__|$$ID|g" -e "s|__MODEL_URI__|$$URI|g" \
+		k8s/api/deployment.yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) apply -f k8s/api/service.yaml -f k8s/api/hpa.yaml
+	$(KUBECTL) -n fraud rollout status deployment/fraud-api --timeout 180s
+rollback:
+	$(KUBECTL) -n fraud rollout undo deployment/fraud-api
+	$(KUBECTL) -n fraud rollout status deployment/fraud-api --timeout 180s
+
+# Headless Locust against localhost:8000: ramp 1 user/s to LOAD_USERS, run LOAD_TIME.
+LOAD_USERS := 50
+LOAD_TIME := 3m
+loadtest:
+	mkdir -p .state/loadtest
+	.venv/bin/locust -f loadtest/locustfile.py --headless --host http://localhost:8000 \
+		-u $(LOAD_USERS) -r 1 -t $(LOAD_TIME) --csv .state/loadtest/run --only-summary
+
 mlflow-check:
 	curl -fsS $(MLFLOW_URL)/health && echo
 	curl -fsS -X POST -H "Content-Type: application/json" -d '{"max_results": 5}' \
 		$(MLFLOW_URL)/api/2.0/mlflow/experiments/search && echo
 
 .PHONY: install lock lint test data train serve tools cluster-up cluster-down mlflow-up mlflow-check \
-	image train-deploy train-job
+	image train-deploy train-job metrics-server deploy rollback loadtest

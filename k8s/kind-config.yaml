@@ -17,3 +17,7 @@ nodes:
       - containerPort: 30500
         hostPort: 5000
         listenAddress: 127.0.0.1
+      # localhost:8000 -> scoring API Service NodePort.
+      - containerPort: 30800
+        hostPort: 8000
+        listenAddress: 127.0.0.1

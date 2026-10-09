@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 from mlflow import MlflowClient
+from mlflow.exceptions import MlflowException
 
 from fraud.config import MlflowConfig, load_config
 
@@ -28,14 +29,22 @@ def pinned_uri(cfg: MlflowConfig, version: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> str:
-    parser = argparse.ArgumentParser(description="Print the pinned model URI of the champion.")
+    parser = argparse.ArgumentParser(description="Print a pinned model URI (default: champion).")
     parser.add_argument("--config", type=Path, default=Path("configs/config.yaml"))
+    parser.add_argument("--version", help="a specific registered version instead of the champion")
     args = parser.parse_args(argv)
     require_tracking_uri()
     cfg = load_config(args.config).mlflow
-    version = champion_version(cfg)
-    if version is None:
-        raise LookupError(f"Model '{cfg.model_name}' has no '{cfg.champion_alias}' alias yet")
+    if args.version:
+        try:
+            MlflowClient().get_model_version(cfg.model_name, args.version)
+        except MlflowException as err:
+            raise LookupError(f"Model '{cfg.model_name}' has no version {args.version}") from err
+        version = args.version
+    else:
+        version = champion_version(cfg)
+        if version is None:
+            raise LookupError(f"Model '{cfg.model_name}' has no '{cfg.champion_alias}' alias yet")
     uri = pinned_uri(cfg, version)
     print(uri)  # CLI output, read by the Makefile
     return uri

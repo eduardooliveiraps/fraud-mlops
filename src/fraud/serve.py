@@ -1,7 +1,8 @@
 """Scoring API. One pinned model version, loaded at startup; scaling = more pods, not workers.
 
 Run: uvicorn --factory fraud.serve:create_app (see `make serve`). Environment:
-MODEL_URI (pinned, e.g. models:/fraud-lgbm/3), MLFLOW_TRACKING_URI, FRAUD_CONFIG (optional).
+MODEL_URI (pinned, e.g. models:/fraud-lgbm/3), MLFLOW_TRACKING_URI, FRAUD_CONFIG (optional),
+DRAIN_FILE (optional; while this file exists, responses ask clients to reconnect).
 Request bodies are never logged (license rule: no row-level data in logs).
 """
 
@@ -117,6 +118,7 @@ def create_app() -> FastAPI:
     cfg = load_config(Path(os.environ.get("FRAUD_CONFIG", "configs/config.yaml")))
     model, metadata, version = _load_model(uri)
     threshold = float(metadata["threshold"])
+    drain_file = Path(os.environ["DRAIN_FILE"]) if os.environ.get("DRAIN_FILE") else None
     window = ScoreWindow(
         cfg.monitoring.psi_window, metadata["reference_edges"], metadata["reference_fractions"]
     )
@@ -149,17 +151,24 @@ def create_app() -> FastAPI:
     ).labels(version=version).set(1)
 
     app = FastAPI(title="fraud-mlops scoring API", version=version)
+    # One prediction at a time per process. Python runs one thread at a time (GIL), so parallel
+    # scoring threads only fight over it: measured 33 req/s with 4 threads vs 68 with 1.
+    # Waiting threads sleep on the lock; /health does not take it, so probes stay fast.
+    score_lock = threading.Lock()
 
     @app.middleware("http")
-    async def measure(
+    async def measure_and_drain(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        if request.url.path != "/score":
-            return await call_next(request)
         start = time.perf_counter()
         response = await call_next(request)
-        latency.observe(time.perf_counter() - start)
-        requests_total.labels(status=str(response.status_code)).inc()
+        if request.url.path == "/score":
+            latency.observe(time.perf_counter() - start)
+            requests_total.labels(status=str(response.status_code)).inc()
+        # Shutting down (preStop created the file): ask each client to close its kept-alive
+        # connection after this response, so it reconnects to another pod before uvicorn stops.
+        if drain_file is not None and drain_file.exists():
+            response.headers["Connection"] = "close"
         return response
 
     @app.get("/metrics")
@@ -173,7 +182,8 @@ def create_app() -> FastAPI:
     @app.post("/score")
     def score_application(application: Application) -> ScoreResponse:  # type: ignore[valid-type]
         # A sync endpoint: FastAPI runs it in a thread pool, so CPU work does not block the server.
-        value = float(score(model, pd.DataFrame([application.model_dump()]))[0])
+        with score_lock:
+            value = float(score(model, pd.DataFrame([application.model_dump()]))[0])
         scores.observe(value)
         window.add(value)
         return ScoreResponse(

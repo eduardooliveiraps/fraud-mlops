@@ -23,7 +23,7 @@ It only considers releases at least 14 days old (dependency cool-down).
 Requires Docker (Docker Desktop with WSL integration) and ~10 GB RAM for WSL.
 
 ```bash
-make tools         # pinned kind + kubectl into ~/.local/bin (checksums verified)
+make tools         # pinned kind, kubectl, helm into ~/.local/bin (checksums verified)
 make cluster-up    # one-node kind cluster "fraud" (~1.2 GiB RAM)
 make mlflow-up     # MLflow server + registry; UI at http://localhost:5000
 make mlflow-check  # health check + list experiments
@@ -45,6 +45,17 @@ make train-deploy  # config as ConfigMap + weekly CronJob "fraud-train" using th
 make train-job     # run the CronJob's template now; waits, prints logs, fails if the Job fails
 ```
 
+Serving inside the cluster (http://localhost:8000):
+
+```bash
+make metrics-server             # CPU metrics for kubectl top and the autoscaler (Helm chart)
+make deploy                     # API with the champion's pinned version; waits for the rollout
+make deploy MODEL_VERSION=3     # a specific registered version (hotfix / demo)
+make rollback                   # kubectl rollout undo: previous model + image
+make loadtest                   # Locust, 50 users, 3 min (LOAD_USERS=, LOAD_TIME= to change)
+kubectl -n fraud rollout history deployment/fraud-api   # which model each revision served
+```
+
 | Symptom | Check |
 |---------|-------|
 | `docker: ... EOF` while pulling | Network hiccup: run the command again. |
@@ -53,6 +64,8 @@ make train-job     # run the CronJob's template now; waits, prints logs, fails i
 | Start with an empty MLflow | `make cluster-down && rm -rf .state/mlflow && make cluster-up mlflow-up` |
 | Training Job failed | `make train-job` prints the pod logs; `kubectl -n fraud get jobs` shows history. |
 | Pod stuck in `ErrImageNeverPull`/`ImagePullBackOff` | Image not in the node: `make image` (after every `cluster-up`). |
+| `make deploy` fails with `No such image` | Build it first: `make image`. |
+| Rollout stuck, new pod `CrashLoopBackOff` | Old pods keep serving; `kubectl -n fraud logs <pod>`, then `make rollback`. |
 | `kind load` fails with `content digest ... not found` | `docker save fraud-mlops:<tag> -o img.tar && kind load image-archive img.tar --name fraud` |
 
 ## Data facts and evaluation
@@ -102,6 +115,14 @@ applications, against 280 for flagging nothing. Training takes ~47 s and ~1.3 GB
 `fraud_score`, `fraud_score_psi` (last 1,000 scores vs the training reference; NaN until full),
 `fraud_model_info{version}`. On 1,000 held-out applications the API returns exactly the
 offline scores (max difference 0.0); local latency p50 14 ms, p99 23 ms.
+
+In the cluster (pods with 1 CPU each, laptop shared with Locust, MLflow and Docker):
+
+| Load test (50 users) | Pods | Throughput | p50 | Failures |
+|----------------------|-----:|-----------:|----:|---------:|
+| Before scale-out | 2 | 84 req/s | 325 ms | 0 |
+| After HPA scale-out | 4 | 134 req/s | 160 ms | 0 |
+| Rollout to v3 + rollback, under load | 4 | 134 req/s | 140 ms | 0 of 31,938 |
 
 ## Dataset and license
 

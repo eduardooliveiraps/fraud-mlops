@@ -115,6 +115,29 @@ def test_metrics_and_psi_window(client, env):
     assert math.isfinite(metric(client, "fraud_score_psi"))
 
 
+def test_drain_file_asks_clients_to_reconnect(env, monkeypatch, tmp_path):
+    drain = tmp_path / "draining"
+    monkeypatch.setenv("DRAIN_FILE", str(drain))
+    client = TestClient(serve.create_app())
+    app = applications(1)[0]
+    assert client.post("/score", json=app).headers.get("connection") != "close"
+    drain.touch()  # what preStop does
+    response = client.post("/score", json=app)
+    assert response.status_code == 200 and response.headers["connection"] == "close"
+    assert client.get("/health").headers["connection"] == "close"
+
+
+def test_concurrent_requests_all_succeed_and_are_counted(client):
+    from concurrent.futures import ThreadPoolExecutor
+
+    apps = applications(40, seed=13)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        codes = list(pool.map(lambda a: client.post("/score", json=a).status_code, apps))
+    assert codes == [200] * 40
+    assert metric(client, 'fraud_requests_total{status="200"}') == 40
+    assert metric(client, "fraud_score_count") == 40
+
+
 @pytest.mark.parametrize(
     ("uri", "error", "exc"),
     [
@@ -144,3 +167,10 @@ def test_startup_fails_if_code_features_differ_from_model(env, monkeypatch):
 def test_registry_cli_prints_pinned_champion_uri(env, capsys):
     assert registry_main(["--config", "config.yaml"]) == env
     assert capsys.readouterr().out.strip() == env
+
+
+def test_registry_cli_specific_version(env):
+    version = env.rsplit("/", 1)[1]
+    assert registry_main(["--config", "config.yaml", "--version", version]) == env
+    with pytest.raises(LookupError, match="has no version 99"):
+        registry_main(["--config", "config.yaml", "--version", "99"])

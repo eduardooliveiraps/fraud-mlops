@@ -11,7 +11,7 @@ Status: todo | design | in progress | review | done. One part in progress at a t
 | 4 | Training + gate (local, against cluster MLflow) | done | 2, 3 |
 | 5 | Training Job / CronJob on Kubernetes | done | 4 |
 | 6 | Scoring API (local) | done | 3, 4 |
-| 7 | Serving on Kubernetes: probes, HPA, rollback, load test | todo | 5, 6 |
+| 7 | Serving on Kubernetes: probes, HPA, rollback, load test | done | 5, 6 |
 | 8 | Monitoring: Prometheus, Grafana, PSI alert | todo | 7 |
 | 9 | CI/CD: image to GHCR, kind smoke test | todo | 7 |
 | 10 | Terraform (kind + helm) and final README | todo | all |
@@ -65,7 +65,13 @@ Status: todo | design | in progress | review | done. One part in progress at a t
   `fraud_request_latency_seconds` (histogram, /score only), `fraud_score` (histogram),
   `fraud_score_psi` (gauge, last `monitoring.psi_window` scores, NaN until full),
   `fraud_model_info{version}` (gauge = 1).
-- **Deploy**: `make deploy` resolves `@champion` to a version and sets it on the Deployment.
+- **Deploy** (`make deploy [MODEL_VERSION=n]`, `make rollback`): resolves `@champion` (or checks
+  that version n exists) and that the image exists locally, then applies Deployment `fraud-api`
+  with `MODEL_URI` pinned, image tag, image content id and a change-cause. Service `fraud-api`
+  (`fraud-api.fraud.svc.cluster.local:8000`, NodePort 30800 -> `localhost:8000`); HPA 2-4 pods
+  at 70% CPU of a 250m request. `make rollback` = `kubectl rollout undo` (model and image).
+- **Third-party components**: pinned Helm charts with values in `k8s/<name>/values.yaml`
+  (metrics-server 3.14.0 now; Prometheus and Grafana in part 8; Terraform installs them in part 10).
 
 ## RAM budget (measured in part 2)
 WSL memory cap: 10 GB (`.wslconfig`). Estimated peak: ~5-6.5 GB. Do not run the training Job
@@ -77,6 +83,8 @@ during load tests.
 | MLflow server (1 worker, job runner off) | 250m, 384Mi / 1 CPU, 1Gi | ~350 MiB idle, 355 MiB peak during a run |
 | Training, 1M rows, 4 threads (local, part 4) | - | 1.3 GB peak RSS, 47 s |
 | Training Job (pod, part 5) | 2 CPU, 1536Mi / 4 CPU, 2560Mi | ~1.15 GiB working set, ~60 s |
+| API pod, x2-4 (part 7) | 250m, 384Mi / 1 CPU, 768Mi | ~200 MiB; ~1 CPU (at limit) under load |
+| metrics-server (part 7) | chart defaults (100m, 200Mi) | - |
 
 Measured with `docker stats fraud-control-plane` and the pod's cgroup `memory.current`/`memory.peak`.
 Rebuilding the cluster from scratch (`cluster-down`, `cluster-up`, `mlflow-up`) takes ~2 min.
@@ -187,3 +195,28 @@ Format: date - decision - why - alternatives considered.
   `307 -> /metrics/`; the test client followed it silently, so a test now forbids redirects.
 - 2026-10-09 - Keep `httpx` for FastAPI's TestClient despite a Starlette warning suggesting
   `httpx2` - Unknown package to us; httpx works. Revisit when Starlette drops httpx support.
+- 2026-10-09 - metrics-server from its official Helm chart (pinned) - One rule: third-party
+  components are pinned charts, ours are plain manifests. Alt: raw manifest + `kubectl patch`.
+- 2026-10-09 - Manifests filled by `sed` in `make deploy`, plus the image content id as a pod
+  annotation - A rebuilt `-dirty` image keeps its tag, so without the id the Deployment did not
+  change and the old code kept running (found during this part). Alt: Kustomize.
+- 2026-10-09 - Deployment has no `replicas` field - The HPA owns the pod count; a fixed value
+  would reset it on every deploy.
+- 2026-10-09 - Deploy guards before Kubernetes: version must exist, image must exist - Bad
+  deploys fail in seconds on the laptop. If one still reaches the cluster, `maxUnavailable: 0`
+  keeps the old pods serving (tested: 40/40 health checks OK while new pods crash-looped).
+- 2026-10-09 - `OMP_NUM_THREADS=1` in the API pod - LightGBM's OpenMP pool otherwise starts one
+  thread per visible CPU (8) in a 1-CPU pod. Measured: 25 -> 4 threads, ~320 -> ~200 MiB.
+- 2026-10-09 - One prediction at a time per pod (lock around scoring) - Python threads share one
+  interpreter lock (GIL); parallel scoring threads only fought over it. Measured on one process:
+  33 req/s with 4 scoring threads vs 68 with 1. Scale with pods. Alt: `async def` endpoint
+  (probes would queue behind scoring).
+- 2026-10-09 - Kubernetes Services balance connections, not requests - With kept-alive
+  connections, pods added by the HPA got almost no traffic (2 of 4 pods idle). The load test now
+  reconnects every 100 requests (like a client pool's max connection lifetime). In production:
+  an L7 load balancer (GKE Gateway) or mesh balances per request.
+- 2026-10-09 - Drain before shutdown: `preStop` creates `$DRAIN_FILE`, then sleeps 5 s; while the
+  file exists every response carries `Connection: close` - At SIGTERM uvicorn closes idle
+  kept-alive connections, and a client sending at that instant got a closed socket (3 of 31,650
+  requests failed during a rollout + rollback). With draining: 0 of 31,938. No HTTP endpoint, so
+  nobody outside the pod can trigger it. Alt: rely on client retries.

@@ -1,0 +1,104 @@
+# Scoring API. `make deploy` fills __IMAGE_TAG__, __IMAGE_ID__ and __MODEL_URI__ (pinned).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fraud-api
+  namespace: fraud
+  labels:
+    app: fraud-api
+  annotations:
+    kubernetes.io/change-cause: "__MODEL_URI__ (image __IMAGE_TAG__)"  # `kubectl rollout history`
+spec:
+  # No `replicas`: the HPA owns the pod count; a value here would reset it on every deploy.
+  revisionHistoryLimit: 5  # ReplicaSets kept for `rollout undo`
+  progressDeadlineSeconds: 120  # a rollout that cannot make progress is reported as failed
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0  # never remove a ready pod before its replacement is ready
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: fraud-api
+  template:
+    metadata:
+      labels:
+        app: fraud-api
+      annotations:
+        # Image content id: a rebuilt image under the same tag (e.g. "-dirty") still rolls out.
+        fraud-mlops/image-id: "__IMAGE_ID__"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+      containers:
+        - name: api
+          image: fraud-mlops:__IMAGE_TAG__
+          imagePullPolicy: IfNotPresent
+          # One worker per pod: scale with pods. No access log: metrics cover requests.
+          command: [uvicorn, --factory, fraud.serve:create_app, --host, 0.0.0.0, --port, "8000",
+                    --no-access-log]
+          env:
+            - name: MODEL_URI
+              value: __MODEL_URI__
+            - name: MLFLOW_TRACKING_URI
+              value: http://mlflow.fraud.svc.cluster.local:5000
+            # One OpenMP thread: by default LightGBM's pool has one thread per visible CPU (8),
+            # far above this pod's 1-CPU limit. Measured: 25 -> 4 threads, 320 -> 200 MiB.
+            - name: OMP_NUM_THREADS
+              value: "1"
+            - name: DRAIN_FILE  # created by preStop; see lifecycle below
+              value: /tmp/draining
+          ports:
+            - name: http
+              containerPort: 8000
+          startupProbe:  # up to 60 s to download and load the model
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:  # gets traffic only while this passes
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:  # restarted if this keeps failing
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          lifecycle:
+            # Before SIGTERM: for 5 s keep answering (the Service is removing this pod) and tell
+            # clients to reconnect elsewhere, so no kept-alive connection is cut mid-request.
+            preStop:
+              exec:
+                command: [sh, -c, 'touch "$DRAIN_FILE" && sleep 5']
+          resources:  # measured in the cluster: ~200 MiB, CPU-bound at ~1 core under load
+            requests:
+              cpu: 250m  # also the HPA's 100%
+              memory: 384Mi
+            limits:
+              cpu: "1"
+              memory: 768Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: config
+              mountPath: /app/configs
+              readOnly: true
+            - name: tmp  # MLflow downloads the model here
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: fraud-config
+        - name: tmp
+          emptyDir:
+            sizeLimit: 512Mi
