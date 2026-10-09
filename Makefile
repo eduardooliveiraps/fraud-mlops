@@ -2,21 +2,22 @@ PY := python3.11
 
 # Pinned CLI tools (sha256 from the official release pages), installed to ~/.local/bin.
 BIN := $(HOME)/.local/bin
+# kind CLI: only for `kind load` (Terraform creates the cluster). No inline comments on
+# variable lines: Make keeps the spaces before `#` in the value.
 KIND_VERSION := v0.33.0
 KIND_SHA256 := aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
-KUBECTL_VERSION := v1.37.1
-KUBECTL_SHA256 := 65691ff77eb6fa44c908b77a1082c9f092c3b9733b5cefabec0d1104890e21a8
-HELM_VERSION := v4.3.0
-HELM_SHA256 := 86584a54def73570558f66f5111cc53dfed56689637ae32c1201205d494f54fb
+# kubectl within one minor version of the cluster (Kubernetes v1.35, see terraform/main.tf).
+KUBECTL_VERSION := v1.35.9
+KUBECTL_SHA256 := 3cfeaf80be482b435b0aa214aff6e0b2c312ee23c0ff20810c75517b6004c6eb
+TERRAFORM_VERSION := 1.16.4
+TERRAFORM_SHA256 := dc94af0eef1147718ad7c8daea792ed199e3e0492eec180d0adafa2a65a879df
 
 # Local cluster. --context makes every kubectl call target this cluster, never another one.
 CLUSTER := fraud
 KIND := $(BIN)/kind
 KUBECTL := $(BIN)/kubectl --context kind-$(CLUSTER)
-HELM := $(BIN)/helm --kube-context kind-$(CLUSTER)
-METRICS_SERVER_CHART := 3.14.0
-PROMETHEUS_CHART := 29.33.1
-GRAFANA_CHART := 13.2.5
+TF := $(BIN)/terraform -chdir=terraform
+MONITORING := true
 MLFLOW_URL := http://localhost:5000
 # Unique tag per build: commit id, plus "-dirty" if there are uncommitted changes. Never "latest".
 IMAGE := fraud-mlops
@@ -69,20 +70,33 @@ tools:
 	mkdir -p $(BIN)
 	$(call install-bin,kind,https://kind.sigs.k8s.io/dl/$(KIND_VERSION)/kind-linux-amd64,$(KIND_SHA256))
 	$(call install-bin,kubectl,https://dl.k8s.io/release/$(KUBECTL_VERSION)/bin/linux/amd64/kubectl,$(KUBECTL_SHA256))
-	$(BIN)/helm version --short 2>/dev/null | grep -q "^$(HELM_VERSION)+" || { \
-		$(CURL) -o $(BIN)/.helm.tgz https://get.helm.sh/helm-$(HELM_VERSION)-linux-amd64.tar.gz \
-		&& echo "$(HELM_SHA256)  $(BIN)/.helm.tgz" | sha256sum --check --quiet \
-		&& tar -xzf $(BIN)/.helm.tgz -C $(BIN) --strip-components=1 linux-amd64/helm; \
-		STATUS=$$?; rm -f $(BIN)/.helm.tgz; exit $$STATUS; \
+	$(BIN)/terraform version 2>/dev/null | grep -q "^Terraform v$(TERRAFORM_VERSION)$$" || { \
+		$(CURL) -o $(BIN)/.terraform.zip \
+			https://releases.hashicorp.com/terraform/$(TERRAFORM_VERSION)/terraform_$(TERRAFORM_VERSION)_linux_amd64.zip \
+		&& echo "$(TERRAFORM_SHA256)  $(BIN)/.terraform.zip" | sha256sum --check --quiet \
+		&& python3 -c "import zipfile; zipfile.ZipFile('$(BIN)/.terraform.zip').extract('terraform', '$(BIN)')" \
+		&& chmod 0755 $(BIN)/terraform; \
+		STATUS=$$?; rm -f $(BIN)/.terraform.zip; exit $$STATUS; \
 	}
-	$(KIND) version && $(BIN)/kubectl version --client && $(BIN)/helm version --short
+	$(KIND) version && $(BIN)/kubectl version --client && $(BIN)/terraform version | head -1
 
-# .state/ holds MLflow's database and artifacts on the host, so they outlive the cluster.
+# Cluster + add-ons (metrics-server; Prometheus and Grafana unless MONITORING=false) with
+# Terraform. .state/ holds MLflow's data on the host, so it outlives the cluster.
 cluster-up:
-	mkdir -p .state/mlflow
-	$(KIND) create cluster --name $(CLUSTER) --config k8s/kind-config.yaml --wait 120s
+	mkdir -p .state/mlflow data/processed
+	$(TF) init -input=false
+	$(TF) apply -input=false -auto-approve -var monitoring=$(MONITORING) -var cluster_name=$(CLUSTER)
 cluster-down:
-	$(KIND) delete cluster --name $(CLUSTER)
+	$(TF) destroy -input=false -auto-approve -var monitoring=$(MONITORING) \
+		-var cluster_name=$(CLUSTER)
+# Formatting and validation of the Terraform code (no cluster needed).
+tf-check:
+	$(TF) fmt -check -recursive
+	$(TF) init -input=false -backend=false >/dev/null && $(TF) validate
+
+# Everything on top of the cluster: MLflow, image, training CronJob, API (needs a champion:
+# the first time, run `make train-job` before `make deploy`).
+up: mlflow-up image train-deploy deploy
 
 mlflow-up:
 	$(KUBECTL) apply -f k8s/namespace.yaml -f k8s/mlflow/
@@ -111,25 +125,6 @@ train-job:
 	$(KUBECTL) -n fraud logs -l job-name=$$JOB --prefix --tail=-1; \
 	echo "$$JOB: $$STATE"; case "$$STATE" in *Complete*) ;; *) exit 1;; esac
 
-# CPU/memory metrics for `kubectl top` and the HPA (kind does not ship metrics-server).
-metrics-server:
-	$(HELM) upgrade --install metrics-server metrics-server \
-		--repo https://kubernetes-sigs.github.io/metrics-server/ --version $(METRICS_SERVER_CHART) \
-		--namespace kube-system --values k8s/metrics-server/values.yaml --wait --timeout 3m
-
-# Prometheus (server only, scrapes annotated pods, holds the alert rule) and Grafana
-# (data source + dashboard provisioned from the repo) in namespace "monitoring".
-monitoring:
-	$(HELM) upgrade --install prometheus prometheus \
-		--repo https://prometheus-community.github.io/helm-charts --version $(PROMETHEUS_CHART) \
-		--namespace monitoring --create-namespace --values k8s/prometheus/values.yaml \
-		--wait --timeout 5m
-	$(HELM) upgrade --install grafana grafana \
-		--repo https://grafana-community.github.io/helm-charts --version $(GRAFANA_CHART) \
-		--namespace monitoring --values k8s/grafana/values.yaml \
-		--set-file dashboards.default.fraud-api.json=k8s/grafana/fraud-dashboard.json \
-		--wait --timeout 5m
-	@echo "Prometheus: http://localhost:9090  Grafana: http://localhost:3000 (anonymous read-only)"
 # Grafana admin password (generated by the chart into a Secret, never stored in the repo).
 grafana-password:
 	@$(KUBECTL) -n monitoring get secret grafana -o jsonpath='{.data.admin-password}' \
@@ -183,5 +178,5 @@ mlflow-check:
 		$(MLFLOW_URL)/api/2.0/mlflow/experiments/search && echo
 
 .PHONY: install lock lint test data train serve tools cluster-up cluster-down mlflow-up mlflow-check \
-	image train-deploy train-job metrics-server deploy rollback loadtest monitoring grafana-password \
+	image train-deploy train-job deploy rollback loadtest grafana-password tf-check up \
 	drift-demo smoke push

@@ -1,4 +1,4 @@
-# Read-only volume over the kind host mount of data/processed (see kind-config.yaml).
+# Read-only volume over the kind host mount of data/processed (see terraform/main.tf).
 apiVersion: v1
 kind: PersistentVolume
 metadata:

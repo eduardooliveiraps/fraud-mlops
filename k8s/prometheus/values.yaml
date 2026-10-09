@@ -1,4 +1,4 @@
-# Values for prometheus-community/prometheus (version pinned in the Makefile): the server only.
+# Values for prometheus-community/prometheus (version pinned in terraform/main.tf): server only.
 alertmanager:
   enabled: false  # alerts fire and are visible in Prometheus/Grafana but are not sent anywhere
 kube-state-metrics:
@@ -18,7 +18,7 @@ server:
   service:
     type: NodePort
     servicePort: 9090
-    nodePort: 30900  # -> localhost:9090 (kind-config.yaml)
+    nodePort: 30900  # -> localhost:9090 (terraform/main.tf)
   resources:
     requests:
       cpu: 100m

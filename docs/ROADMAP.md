@@ -14,8 +14,8 @@ Status: todo | design | in progress | review | done. One part in progress at a t
 | 7 | Serving on Kubernetes: probes, HPA, rollback, load test | done | 5, 6 |
 | 8 | Monitoring: Prometheus, Grafana, PSI alert | done | 7 |
 | 9 | CI/CD: image to GHCR, kind smoke test | done (PR path checked in part 10's PR) | 7 |
-| 10 | Terraform (kind + helm) and final README | todo | all |
-| 10c | Optional: GCP Terraform module, validate only | decide after 10b | 10 |
+| 10 | Terraform (kind + helm) and final README | review | all |
+| 10c | Optional: GCP Terraform module, validate only | skipped | 10 |
 
 ## Contracts
 - **Config** (`fraud.config`): `load_config(path) -> Config`. Only source of paths, months,
@@ -29,8 +29,13 @@ Status: todo | design | in progress | review | done. One part in progress at a t
   (may be `inf` = flag nothing). `evaluate(y_test, s_test, threshold, cfg.evaluation) ->`
   `{pr_auc, recall_at_fpr, precision, recall, fpr, cost_per_1k}`; flagged = score >= threshold.
   The gate compares `recall_at_fpr` and `pr_auc`. Baseline to beat: 0.198 / 0.037 (test months).
-- **Cluster** (`make tools cluster-up`): kind cluster `fraud`, kubectl context `kind-fraud`,
-  namespace `fraud`. `make cluster-down` deletes it; MLflow data in `.state/mlflow/` survives.
+- **Cluster** (`make tools cluster-up` = `terraform apply` in `terraform/`): kind cluster `fraud`
+  (Kubernetes v1.35.0), kubectl context `kind-fraud`, namespace `fraud`, host mounts
+  `.state/mlflow` and `data/processed` (read-only), ports 5000/8000/9090/3000 on 127.0.0.1, plus
+  metrics-server, Prometheus and Grafana (`MONITORING=false` skips the last two).
+  `make cluster-down` = `terraform destroy`; MLflow data in `.state/mlflow/` survives.
+  `make up` = MLflow, image, training CronJob, API. Local state only (`terraform.tfstate`,
+  gitignored: it holds cluster credentials).
 - **MLflow** (`make mlflow-up`): `http://mlflow.fraud.svc.cluster.local:5000` in the cluster,
   `http://localhost:5000` from WSL/Windows. Server and client are both mlflow 3.16.1.
 - **Validation** (`fraud.validate`): `validate(df)` (Pandera, strict). Errors list column, check
@@ -70,16 +75,16 @@ Status: todo | design | in progress | review | done. One part in progress at a t
   with `MODEL_URI` pinned, image tag, image content id and a change-cause. Service `fraud-api`
   (`fraud-api.fraud.svc.cluster.local:8000`, NodePort 30800 -> `localhost:8000`); HPA 2-4 pods
   at 70% CPU of a 250m request. `make rollback` = `kubectl rollout undo` (model and image).
-- **Third-party components**: pinned Helm charts with values in `k8s/<name>/values.yaml`
-  (metrics-server 3.14.0, prometheus-community/prometheus 29.33.1, grafana-community/grafana
-  13.2.5; Terraform installs them in part 10). Charts follow the same 14-day cool-down.
-- **Monitoring** (`make monitoring`, namespace `monitoring`): Prometheus scrapes pods annotated
+- **Third-party components**: pinned Helm charts installed by Terraform (`helm_release`), values in
+  `k8s/<name>/values.yaml` (metrics-server 3.14.0, prometheus-community/prometheus 29.33.1,
+  grafana-community/grafana 13.2.5). Charts follow the same 14-day cool-down.
+- **Monitoring** (installed by `make cluster-up`, namespace `monitoring`): Prometheus scrapes pods annotated
   `prometheus.io/scrape: "true"` (+ `port`, `path`) every 15 s and holds rule `FraudScoreDrift`
   (`max(fraud_score_psi) > 0.2` for 5m). `prometheus-server.monitoring.svc.cluster.local:9090`,
   `localhost:9090`. Grafana `localhost:3000`, data source uid `prometheus`, dashboard uid
   `fraud-api`. A test checks that every metric the dashboard and rule query is exposed by the API.
 - **CI** (`.github/workflows/ci.yml`, first green run 2026-10-09: lint-test 1.6 min, smoke 3.6 min,
-  image public at `ghcr.io/eduardooliveiraps/fraud-mlops:2d60948`): `lint-test` then `smoke` (fresh kind cluster, synthetic
+  image published to `ghcr.io/eduardooliveiraps/fraud-mlops`): `lint-test` then `smoke` (fresh kind cluster, synthetic
   data via `python -m fraud.data --synthetic N`, which refuses to overwrite an existing file;
   ends with `make smoke` = `tests/test_live_api.py` against `localhost:8000`). On push to `main`:
   `make push REGISTRY=ghcr.io/<owner>` -> `ghcr.io/<owner>/fraud-mlops:<git describe>`.
@@ -265,3 +270,20 @@ Format: date - decision - why - alternatives considered.
 - 2026-10-09 - Repository made public (portfolio) - GitHub Free: Actions minutes and package
   storage are free and unlimited for public repos (private: 2,000 min/month, 500 MB, which the
   237 MB image would fill in ~2 versions). History checked: no data was ever committed.
+- 2026-10-09 - Terraform (`tehcyx/kind` 0.11.0 + `hashicorp/helm` 3.3.0, CLI 1.16.4) creates the
+  cluster and installs the third-party charts; `k8s/kind-config.yaml` removed - One declarative
+  source; `terraform plan` shows drift. Our own components stay `make`/`kubectl` (the deploy needs
+  the champion lookup, image id and rollbacks, which Terraform should not own). Helm CLI dropped.
+- 2026-10-09 - Kubernetes v1.37.0 -> v1.35.0, kubectl v1.37.1 -> v1.35.9 - The kind provider's latest
+  release embeds kind v0.31, whose newest supported node image is v1.35.0; a supported pairing
+  beats an untested one. kubectl stays within one minor version of the cluster.
+- 2026-10-09 - Local Terraform state, never committed - Single-user laptop cluster, zero cost.
+  In production: a remote backend (e.g. a GCS bucket) with state locking.
+- 2026-10-09 - Terraform, not OpenTofu - The name job postings use; its BSL license is free for
+  this use. OpenTofu is a drop-in open-source alternative.
+- 2026-10-09 - Commit history rewritten (messages only) to remove AI co-author trailers - Owner's
+  choice; every commit's files verified identical; image `2d60948` now has no matching commit.
+- 2026-10-09 - GCP Terraform module (10c) skipped - A module that is never applied adds code a reviewer
+  cannot see working; the README's "Production considerations" covers the GCP path instead.
+- 2026-10-09 - README rewritten for recruiters and engineers: highlights, tech stack, how the loop
+  works, architecture diagram, results, key decisions, getting started; this file keeps the details.
