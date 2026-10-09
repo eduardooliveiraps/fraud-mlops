@@ -1,5 +1,5 @@
 # Stable address for MLflow: mlflow.fraud.svc.cluster.local:5000 in the cluster,
-# NodePort 30500 (-> localhost:5000 via kind-config.yaml) from the host.
+# NodePort 30500 (-> localhost:5000, terraform/main.tf) from the host.
 apiVersion: v1
 kind: Service
 metadata:

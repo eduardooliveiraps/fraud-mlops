@@ -2,84 +2,145 @@
 
 [![ci](https://github.com/eduardooliveiraps/fraud-mlops/actions/workflows/ci.yml/badge.svg)](https://github.com/eduardooliveiraps/fraud-mlops/actions/workflows/ci.yml)
 
-Fraud scoring service with a train → gate → deploy → monitor loop on a local kind cluster.
-Plan, status and design decisions: [docs/ROADMAP.md](docs/ROADMAP.md).
+A fraud scoring service with a reproducible **train → gate → deploy → monitor** loop on Kubernetes.
+A LightGBM model scores bank account applications from the Bank Account Fraud dataset
+(NeurIPS 2022). The whole platform runs on a laptop with free, open-source tools, and CI rebuilds
+and tests it from scratch on every push.
 
-## Quickstart
+**Contents:** [Highlights](#highlights) · [Tech stack](#tech-stack) · [How it works](#how-it-works) ·
+[Architecture](#architecture) · [Results](#results) · [Key design decisions](#key-design-decisions) ·
+[Getting started](#getting-started) · [Production considerations](#production-considerations) ·
+[Repository layout](#repository-layout) · [Dataset and license](#dataset-and-license)
 
-Requires Python 3.11 (Linux/WSL2).
+## Highlights
 
-```bash
-make install   # create .venv from the pinned requirements-dev.lock
-make lint      # ruff
-make test      # pytest, synthetic data only
-make data      # Base.csv -> Parquet (paths in configs/config.yaml)
+- **Automated, gated retraining**: a Kubernetes CronJob validates the data, trains, registers the
+  model in MLflow, and promotes it only if it beats the current champion on the same held-out data.
+- **Production-style serving**: pinned model versions, health probes, autoscaling (2→4 pods), and
+  **zero failed requests** during a model rollout and rollback under load.
+- **Drift monitoring**: Prometheus and Grafana, with an alert that fires when the score
+  distribution shifts, demonstrated end to end.
+- **CI/CD on a real cluster**: every push builds the image, creates a throwaway Kubernetes
+  cluster, trains, deploys and calls the live API, then publishes the tested image.
+- **Infrastructure as code**: Terraform creates the cluster and installs the add-ons.
+- **Reproducible and pinned**: locked dependencies with a 14-day cool-down, tools and images pinned
+  by checksum or digest, and every model version tagged with its data hash and image.
+
+## Tech stack
+
+| Area | Tools |
+|------|-------|
+| Model | Python 3.11, LightGBM, scikit-learn, pandas, Pandera |
+| ML lifecycle | MLflow 3 (tracking, model registry, aliases) |
+| Serving | FastAPI, uvicorn, Prometheus client |
+| Platform | Kubernetes (kind), Terraform, Helm charts, Docker |
+| Observability | Prometheus, Grafana, metrics-server |
+| Delivery and testing | GitHub Actions, GHCR, pytest, Locust, ruff |
+
+## How it works
+
+1. **Train.** A weekly CronJob runs the training image in the cluster. It validates the data
+   (strict schema), trains on months 0-4, picks a cost-based decision threshold on month 5 and
+   evaluates on months 6-7. The model is registered in MLflow with its threshold, feature list
+   and a reference score histogram for drift monitoring.
+2. **Gate.** The new version and the current `champion` are both re-scored on the same test
+   months. The `champion` alias moves only if recall at 5% FPR improves by at least 0.005 and
+   PR-AUC drops by no more than 0.005. Every version is tagged with the decision and the reason.
+3. **Deploy.** `make deploy` resolves `champion` to a fixed version number and rolls it out to the
+   API. Because every deploy pins a version, `make rollback` restores the previous model.
+   Rollouts replace pods one at a time and never remove a ready pod first.
+4. **Monitor.** Each API pod exposes request, latency and score metrics, plus PSI (Population
+   Stability Index) comparing recent scores with the training reference. Prometheus scrapes all
+   pods automatically; the `FraudScoreDrift` alert fires when PSI stays above 0.2 for 5 minutes.
+   The response is to check the input data and retrain, back to step 1.
+
+**CI/CD.** On every push and pull request, GitHub Actions runs lint and unit tests, then the whole
+loop on a fresh cluster with synthetic data (the licensed dataset never reaches CI). On `main`,
+the image that passed is pushed to `ghcr.io/eduardooliveiraps/fraud-mlops:<commit>`.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph host["Laptop or CI runner"]
+        data[("BAF data<br/>Parquet, local only")]
+        tf["Terraform"]
+        deploy["make deploy<br/>champion → pinned version"]
+        users["Clients / Locust"]
+    end
+
+    subgraph cluster["kind cluster · Kubernetes v1.35"]
+        subgraph fraudns["namespace: fraud"]
+            train["CronJob fraud-train<br/>validate → train → register → gate"]
+            mlflow[("MLflow<br/>tracking + model registry")]
+            api["Deployment fraud-api<br/>FastAPI · HPA 2-4 pods"]
+        end
+        subgraph monns["namespace: monitoring"]
+            prom["Prometheus<br/>FraudScoreDrift alert"]
+            graf["Grafana"]
+        end
+    end
+
+    tf -- "creates cluster,<br/>installs charts" --> cluster
+    data -- "read-only mount" --> train
+    train -- "registers version,<br/>moves champion if better" --> mlflow
+    deploy -- "MODEL_URI = models:/fraud-lgbm/N" --> api
+    mlflow -- "model, threshold,<br/>PSI reference" --> api
+    users -- "POST /score" --> api
+    prom -- "scrapes /metrics" --> api
+    graf -- "queries" --> prom
 ```
 
-`make lock` re-resolves the version ranges in `pyproject.toml` and rewrites both lock files:
-`requirements-dev.lock` (laptop, CI) and `requirements.lock` (runtime only, used by the image).
-It only considers releases at least 14 days old (dependency cool-down).
+| Component | Code | Notes |
+|-----------|------|-------|
+| Training and gate | `src/fraud/train.py`, `src/fraud/gate.py`, `k8s/train/` | Same code runs on the laptop (`make train`) and in the cluster. |
+| Model registry | `k8s/mlflow/` | MLflow on SQLite; data on a host mount, so it survives cluster rebuilds. |
+| Scoring API | `src/fraud/serve.py`, `k8s/api/` | `POST /score`, `GET /health`, `GET /metrics`; same image as training. |
+| Monitoring | `k8s/prometheus/`, `k8s/grafana/` | Alert rule and dashboard live in the repo. |
+| Platform | `terraform/` | kind cluster plus metrics-server, Prometheus and Grafana (pinned Helm charts). |
+| CI/CD | `.github/workflows/ci.yml` | Lint, tests, cluster smoke test, image push. |
 
-## Local cluster runbook
+## Results
 
-Requires Docker (Docker Desktop with WSL integration) and ~10 GB RAM for WSL.
+### Model
 
-```bash
-make tools         # pinned kind, kubectl, helm into ~/.local/bin (checksums verified)
-make cluster-up    # one-node kind cluster "fraud" (~1.2 GiB RAM)
-make mlflow-up     # MLflow server + registry; UI at http://localhost:5000
-make mlflow-check  # health check + list experiments
-make train         # validate -> train -> register in MLflow -> gate (moves @champion if better)
-make cluster-down  # delete the cluster; MLflow data in .state/mlflow/ is kept
-```
+Test months 6-7 (205,011 applications, 1.40% fraud):
 
-Scoring API on the laptop (serves the champion's pinned version from the cluster's MLflow):
+| Model | Recall at 5% FPR | PR-AUC |
+|-------|-----------------:|-------:|
+| Random ranking | 0.050 | 0.014 |
+| `credit_risk_score` alone | 0.198 | 0.037 |
+| **LightGBM** (`fraud-lgbm`, champion) | **0.553** | **0.196** |
 
-```bash
-make serve         # http://localhost:8000/docs (OpenAPI), /score, /health, /metrics
-```
+At the cost-based threshold (assuming a missed fraud costs 20 times a false alarm), the model
+catches 58.7% of frauds while flagging 6.1% of legitimate applications: a cost of 176 per 1,000
+applications, against 280 for flagging nothing. Training takes about 47 s and 1.3 GB of RAM.
 
-Training inside the cluster (same code, packaged as an image; data mounted read-only):
+### Serving
 
-```bash
-make image         # build fraud-mlops:<git describe --dirty> and load it into kind
-make train-deploy  # config as ConfigMap + weekly CronJob "fraud-train" using that image
-make train-job     # run the CronJob's template now; waits, prints logs, fails if the Job fails
-```
+Load test with 50 users (pods limited to 1 CPU; the laptop also runs Locust, MLflow and Docker):
 
-Serving inside the cluster (http://localhost:8000):
+| Scenario | Pods | Throughput | Median latency | Failed requests |
+|----------|-----:|-----------:|---------------:|----------------:|
+| Before autoscaling | 2 | 84 req/s | 325 ms | 0 |
+| After autoscaling | 4 | 134 req/s | 160 ms | 0 |
+| Rollout to a new model version, then rollback | 4 | 134 req/s | 140 ms | 0 of 31,938 |
 
-```bash
-make metrics-server             # CPU metrics for kubectl top and the autoscaler (Helm chart)
-make deploy                     # API with the champion's pinned version; waits for the rollout
-make deploy MODEL_VERSION=3     # a specific registered version (hotfix / demo)
-make rollback                   # kubectl rollout undo: previous model + image
-make loadtest                   # Locust, 50 users, 3 min (LOAD_USERS=, LOAD_TIME= to change)
-kubectl -n fraud rollout history deployment/fraud-api   # which model each revision served
-```
+The API returns exactly the offline scores (maximum difference 0.0 on 1,000 held-out
+applications), so there is no training/serving skew.
 
-Monitoring (Prometheus http://localhost:9090, Grafana http://localhost:3000, read-only without
-login):
+### Drift monitoring
 
-```bash
-make monitoring        # Prometheus (server only) + Grafana, pinned Helm charts, namespace monitoring
-make grafana-password  # admin password (generated into a Kubernetes Secret, not in the repo)
-make drift-demo        # 4 min real held-out traffic, then 8 min shifted traffic (alert fires)
-```
+`make drift-demo` sends real held-out traffic, then shifted traffic:
 
-| Symptom | Check |
-|---------|-------|
-| `docker: ... EOF` while pulling | Network hiccup: run the command again. |
-| MLflow pod restarts | `kubectl -n fraud describe pod -l app=mlflow` (look for `OOMKilled`). |
-| `localhost:5000` refuses connections | `kubectl -n fraud get pods` until `1/1 Running`. |
-| Start with an empty MLflow | `make cluster-down && rm -rf .state/mlflow && make cluster-up mlflow-up` |
-| Training Job failed | `make train-job` prints the pod logs; `kubectl -n fraud get jobs` shows history. |
-| Pod stuck in `ErrImageNeverPull`/`ImagePullBackOff` | Image not in the node: `make image` (after every `cluster-up`). |
-| `make deploy` fails with `No such image` | Build it first: `make image`. |
-| Rollout stuck, new pod `CrashLoopBackOff` | Old pods keep serving; `kubectl -n fraud logs <pod>`, then `make rollback`. |
-| `kind load` fails with `content digest ... not found` | `docker save fraud-mlops:<tag> -o img.tar && kind load image-archive img.tar --name fraud` |
+| Traffic | PSI | `FraudScoreDrift` alert |
+|---------|----:|-------------------------|
+| Real held-out applications | 0.007-0.015 | inactive |
+| Shifted (synthetic) applications | 0.49-0.62 | pending, then **firing after 5 minutes** |
+| Real applications again | 0.018 | resolved |
 
-## Data facts and evaluation
+<details>
+<summary>Data facts: volume and fraud rate per month</summary>
 
 Aggregates from `notebooks/01_eda.py` (1,000,000 applications, 32 columns, 1.10% fraud).
 
@@ -94,80 +155,109 @@ Aggregates from `notebooks/01_eda.py` (1,000,000 applications, 32 columns, 1.10%
 | 6 | 108,168 | 1,450 | 1.34% | test |
 | 7 | 96,843 | 1,428 | 1.47% | test |
 
-- **Time-based split**: train on months 0-4, choose the threshold on month 5, report on 6-7.
-  The fraud rate rises in later months, so metrics are only compared on the same months.
-- **Metrics**: recall at 5% false-positive rate (the BAF paper's benchmark) and PR-AUC
-  (average precision). The decision threshold minimises an assumed cost of 20 per missed fraud
-  and 1 per false alarm (`configs/config.yaml`).
+</details>
 
-### Results (test months 6-7, 205,011 applications, 1.40% fraud)
+## Key design decisions
 
-| Model | Recall at 5% FPR | PR-AUC |
-|-------|-----------------:|-------:|
-| Random ranking | 0.050 | 0.014 |
-| `credit_risk_score` alone | 0.198 | 0.037 |
-| **LightGBM** (`fraud-lgbm` v1, champion) | **0.553** | **0.196** |
+The complete log, with the alternatives considered, is in [docs/ROADMAP.md](docs/ROADMAP.md).
 
-At the cost-based threshold (0.0287, chosen on month 5) the model flags 6.1% of legitimate
-applications and catches 58.7% of frauds (precision 12.1%). Expected cost: 176 per 1,000
-applications, against 280 for flagging nothing. Training takes ~47 s and ~1.3 GB RAM.
+- **Time-based evaluation.** The fraud rate rises from 0.9% to 1.5% across months, so a random
+  split would leak the future. Training, threshold choice and evaluation use separate months,
+  and every comparison, including the gate, uses the same test months.
+- **One metric for quality, another decision for the business.** Recall at 5% FPR (the dataset
+  paper's benchmark) ranks models; the decision threshold comes from an explicit cost assumption
+  in the config.
+- **Self-contained models.** The threshold, feature list and drift reference are stored with the
+  model in MLflow, so a single model URI is all the API needs and they can never be mismatched.
+- **Pinned versions for rollback.** The API runs `models:/fraud-lgbm/N`, never the alias. A
+  rollback restores the previous pod spec, which therefore restores the previous model.
+- **Fail fast at startup.** The API refuses to start with an unpinned model or one trained on
+  different feature code: a crash Kubernetes can see is better than silently wrong scores.
+- **Measured, not guessed.** Resource limits come from measurements, and load tests uncovered and
+  fixed real problems: thread oversubscription, Python's GIL, connection-level load balancing, a
+  keep-alive race at shutdown, and a stale deploy.
+- **Licensed data stays local.** Tests and CI use synthetic data, images contain no data, and logs
+  and error messages report aggregates only.
+- **Clear ownership.** Terraform owns the platform (cluster and third-party charts); `make` and
+  `kubectl` own the application, whose deploys need the champion lookup and rollbacks.
 
-## Scoring API
+## Getting started
 
-`POST /score` takes one application with the 29 model features (schema generated from
-`src/fraud/schema.py`; unknown fields, wrong types and unknown categories get `422`):
+**Requirements:** Linux or WSL2, Docker, Python 3.11 and about 10 GB of RAM for Docker. Download
+`Base.csv` from [Kaggle](https://www.kaggle.com/datasets/sgpjesus/bank-account-fraud-dataset-neurips-2022)
+into `data/raw/`.
 
-```json
-{"score": 0.0123, "flagged": false, "threshold": 0.0287, "model_version": "1"}
+**First run** (about 15 minutes, mostly image downloads):
+
+```bash
+make install                        # Python environment from the pinned lock file
+make data                           # Base.csv -> data/processed/base.parquet
+make tools                          # pinned kind, kubectl and terraform (checksums verified)
+make cluster-up                     # Terraform: cluster, metrics-server, Prometheus, Grafana
+make mlflow-up image train-deploy   # MLflow, the image, the training CronJob
+make train-job                      # train and register the first champion
+make deploy                         # scoring API on http://localhost:8000
 ```
 
-`flagged` is `score >= threshold`; the threshold travels with the model version.
-`GET /metrics` (Prometheus): `fraud_requests_total{status}`, `fraud_request_latency_seconds`,
-`fraud_score`, `fraud_score_psi` (last 1,000 scores vs the training reference; NaN until full),
-`fraud_model_info{version}`. On 1,000 held-out applications the API returns exactly the
-offline scores (max difference 0.0); local latency p50 14 ms, p99 23 ms.
+**Afterwards**, `make cluster-up up` rebuilds everything; MLflow history is kept in `.state/`.
 
-In the cluster (pods with 1 CPU each, laptop shared with Locust, MLflow and Docker):
+| Command | What it does |
+|---------|--------------|
+| `make loadtest` | Locust load test: 50 users for 3 minutes (`LOAD_USERS`, `LOAD_TIME`, `LOAD_DATA=real`) |
+| `make drift-demo` | Real traffic for 4 minutes, then shifted traffic for 8: the drift alert fires |
+| `make deploy MODEL_VERSION=3` | Deploy a specific registered version |
+| `make rollback` | Undo the last rollout (previous model and image) |
+| `make train` / `make serve` | Train or serve from the laptop against the cluster's MLflow |
+| `make smoke` | Live API checks, the last step of CI |
+| `make lint test tf-check` | ruff, pytest (synthetic data only), Terraform format and validate |
+| `make cluster-down` | Delete the cluster; MLflow data in `.state/mlflow/` is kept |
 
-| Load test (50 users) | Pods | Throughput | p50 | Failures |
-|----------------------|-----:|-----------:|----:|---------:|
-| Before scale-out | 2 | 84 req/s | 325 ms | 0 |
-| After HPA scale-out | 4 | 134 req/s | 160 ms | 0 |
-| Rollout to v3 + rollback, under load | 4 | 134 req/s | 140 ms | 0 of 31,938 |
+**Web UIs** (localhost only): MLflow http://localhost:5000 · API docs http://localhost:8000/docs ·
+Prometheus http://localhost:9090 · Grafana http://localhost:3000 (read-only without login;
+`make grafana-password` prints the admin password).
 
-## CI/CD
+<details>
+<summary>Troubleshooting</summary>
 
-`.github/workflows/ci.yml`, on every push and pull request:
+| Symptom | What to do |
+|---------|------------|
+| `docker: ... EOF`, or a slow first `cluster-up` | Image downloads; run the command again. The first run pulls about 2 GB. |
+| MLflow pod restarts | `kubectl -n fraud describe pod -l app=mlflow` and look for `OOMKilled`. |
+| Pod stuck in `ErrImageNeverPull` | The image is not in the cluster: run `make image` after every `cluster-up`. |
+| `make deploy` fails with `No such image` | Build the image first: `make image`. |
+| Rollout stuck, new pod in `CrashLoopBackOff` | Old pods keep serving. Check `kubectl -n fraud logs <pod>`, then `make rollback`. |
+| Training Job failed | `make train-job` prints the pod logs; `kubectl -n fraud get jobs` shows history. |
+| Start with an empty MLflow | `make cluster-down && rm -rf .state/mlflow && make cluster-up up` |
+| `kind load` fails with `content digest ... not found` | `docker save fraud-mlops:<tag> -o img.tar && kind load image-archive img.tar --name fraud` |
 
-1. **lint-test**: `make install lint test` (unit tests use synthetic data only).
-2. **smoke** (after lint-test): the same `make` targets as the runbook, on a fresh kind cluster in
-   the CI machine: synthetic data (`python -m fraud.data --synthetic 20000`), MLflow, image,
-   training CronJob run once (validate, train, register, gate), deploy, live API checks
-   (`make smoke`). On `main` only, the image that passed is pushed to GHCR as
-   `ghcr.io/eduardooliveiraps/fraud-mlops:<short commit>` (no `latest`).
+</details>
 
-Actions are pinned by commit SHA; the token is read-only except `packages: write` in the smoke job.
+## Production considerations
 
-## Monitoring and drift
+This project keeps everything local and free. On a cloud platform it would add:
 
-Prometheus discovers every API pod through its `prometheus.io/scrape` annotation (pods added by
-the autoscaler are scraped automatically) and evaluates one alert rule:
-`FraudScoreDrift` = `max(fraud_score_psi) > 0.2` for 5 minutes. The Grafana dashboard
-(`k8s/grafana/fraud-dashboard.json`, provisioned from the repo) shows request rate by status,
-p50/p99 latency, error share, score distribution, PSI per pod with 0.1/0.2 lines, the alert
-state and pods per model version.
+- **Managed infrastructure**: GKE instead of kind, Artifact Registry instead of loading images
+  into the node, and a managed database for MLflow.
+- **Remote Terraform state** with locking, for example in a GCS bucket.
+- **Per-request load balancing** with an L7 load balancer (Gateway API) instead of
+  connection-level Service balancing.
+- **Alert routing** through Alertmanager to Slack or PagerDuty.
+- **Performance monitoring with real labels**, which arrive weeks later, alongside PSI.
 
-Drift demo (`make drift-demo`; PSI = max over the API pods, sampled every 30 s):
+OpenTofu is a drop-in open-source alternative to Terraform.
 
-| Phase | Traffic | PSI | Alert |
-|-------|---------|----:|-------|
-| 0-4 min | real held-out applications (months 6-7) | 0.007-0.015 | inactive |
-| from ~4.5 min | shifted (synthetic) applications | 0.49-0.62 | pending at ~5.5 min, **firing at ~10.5 min** |
-| afterwards | 90 s of real traffic again | 0.018 | resolved |
+## Repository layout
 
-0 failed requests in 102,890. PSI covers each pod's last 1,000 scores, so it changes only with
-traffic. The alert is not sent anywhere: in production, Alertmanager would route it to
-Slack/PagerDuty, and the response is to check the input data and retrain (`make train-job`).
+```text
+src/fraud/     data, schema, validation, split, metrics, features, train, gate, registry, serve
+tests/         unit tests on synthetic data; test_live_api.py runs only against a live API
+configs/       config.yaml: every path, month, threshold, cost and setting
+k8s/           MLflow, training CronJob, API, Helm chart values, Grafana dashboard
+terraform/     kind cluster and Helm releases
+loadtest/      Locust load test and request payloads
+notebooks/     exploratory analysis as a # %% script (aggregates only)
+docs/          ROADMAP.md: project parts, contracts and the design-decision log
+```
 
 ## Dataset and license
 

@@ -1,8 +1,8 @@
-# Values for grafana-community/grafana (version pinned in the Makefile). The dashboard JSON is
-# passed with --set-file, so Grafana holds no state: data source and dashboard come from the repo.
+# Values for grafana-community/grafana (version pinned in terraform/main.tf). Terraform adds the
+# dashboard JSON, so Grafana holds no state: data source and dashboard come from the repo.
 service:
   type: NodePort
-  nodePort: 30300  # -> localhost:3000 (kind-config.yaml)
+  nodePort: 30300  # -> localhost:3000 (terraform/main.tf)
 testFramework:
   enabled: false
 resources:

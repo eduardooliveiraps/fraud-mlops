@@ -1,5 +1,5 @@
-# CI: lint + unit tests on every push and pull request, then the whole loop (cluster, MLflow,
-# training Job + gate, deploy, live API checks) on a throwaway kind cluster with synthetic data.
+# CI: lint + unit tests on every push and pull request, then the whole loop (Terraform-built
+# kind cluster, MLflow, training Job + gate, deploy, live API checks) with synthetic data.
 # Pushes to main publish the image that passed the smoke test to GHCR.
 # Actions are pinned by commit SHA (a tag can be moved; a SHA cannot); the version is in a comment.
 name: ci
@@ -47,12 +47,15 @@ jobs:
           cache-dependency-path: requirements-dev.lock
       - run: make install PY=python
       - run: make tools
+      - name: Terraform format and validate
+        run: make tf-check
       - name: Synthetic training data (the real dataset is never in CI)
         run: .venv/bin/python -m fraud.data --config configs/config.yaml --synthetic 20000
       - name: MLflow storage writable by the MLflow pod
         # The pod runs as uid 1000 (the owner's laptop user); the runner user is uid 1001.
         run: mkdir -p .state/mlflow && chmod 0777 .state/mlflow
-      - run: make cluster-up
+      - name: Cluster with Terraform (monitoring off in CI)
+        run: make cluster-up MONITORING=false
       - run: make mlflow-up
       - run: make image
       - run: make train-deploy
