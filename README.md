@@ -61,31 +61,30 @@ the image that passed is pushed to `ghcr.io/eduardooliveiraps/fraud-mlops:<commi
 ## Architecture
 
 ```mermaid
-flowchart LR
-    subgraph host["Laptop or CI runner"]
-        data[("BAF data<br/>Parquet, local only")]
-        tf["Terraform"]
-        deploy["make deploy<br/>champion → pinned version"]
-        users["Clients / Locust"]
-    end
+flowchart TB
+    tf["Terraform"]
+    data[("BAF data<br/>Parquet, local only")]
 
     subgraph cluster["kind cluster · Kubernetes v1.35"]
         subgraph fraudns["namespace: fraud"]
-            train["CronJob fraud-train<br/>validate → train → register → gate"]
-            mlflow[("MLflow<br/>tracking + model registry")]
-            api["Deployment fraud-api<br/>FastAPI · HPA 2-4 pods"]
+            train["CronJob fraud-train<br/>validate → train → gate"]
+            mlflow[("MLflow<br/>tracking + registry")]
+            api["Deployment fraud-api<br/>FastAPI · 2-4 pods"]
         end
         subgraph monns["namespace: monitoring"]
-            prom["Prometheus<br/>FraudScoreDrift alert"]
+            prom["Prometheus<br/>drift alert"]
             graf["Grafana"]
         end
     end
 
-    tf -- "creates cluster,<br/>installs charts" --> cluster
+    deploy["make deploy<br/>champion → pinned version"]
+    users["Clients / Locust"]
+
+    tf -- "creates" --> cluster
     data -- "read-only mount" --> train
-    train -- "registers version,<br/>moves champion if better" --> mlflow
-    deploy -- "MODEL_URI = models:/fraud-lgbm/N" --> api
-    mlflow -- "model, threshold,<br/>PSI reference" --> api
+    train -- "registers, promotes" --> mlflow
+    mlflow -- "model + metadata" --> api
+    deploy -- "MODEL_URI" --> api
     users -- "POST /score" --> api
     prom -- "scrapes /metrics" --> api
     graf -- "queries" --> prom

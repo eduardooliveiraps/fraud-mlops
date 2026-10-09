@@ -2,7 +2,9 @@ PY := python3.11
 
 # Pinned CLI tools (sha256 from the official release pages), installed to ~/.local/bin.
 BIN := $(HOME)/.local/bin
-KIND_VERSION := v0.33.0  # CLI only for `kind load`; Terraform creates the cluster
+# kind CLI: only for `kind load` (Terraform creates the cluster). No inline comments on
+# variable lines: Make keeps the spaces before `#` in the value.
+KIND_VERSION := v0.33.0
 KIND_SHA256 := aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
 # kubectl within one minor version of the cluster (Kubernetes v1.35, see terraform/main.tf).
 KUBECTL_VERSION := v1.35.9
