@@ -1,0 +1,72 @@
+# Weekly retraining: validate -> train -> register -> gate. Also the only Job template:
+# manual runs copy it (`make train-job`), so scheduled and manual runs cannot drift apart.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: fraud-train
+  namespace: fraud
+spec:
+  schedule: "0 3 * * 1"  # Mondays 03:00
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid  # never two trainings at once
+  startingDeadlineSeconds: 3600  # skip a run that could not start within an hour
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 1  # one retry, e.g. for a network error talking to MLflow
+      activeDeadlineSeconds: 1800  # kill a hung run
+      ttlSecondsAfterFinished: 86400  # finished Jobs clean themselves up after a day
+      template:
+        metadata:
+          labels:
+            app: fraud-train
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+          containers:
+            - name: train
+              image: fraud-mlops:__IMAGE_TAG__  # set by `make train-deploy`
+              imagePullPolicy: IfNotPresent  # loaded with `kind load`, not pulled
+              command: [python, -m, fraud.train, --config, configs/config.yaml]
+              env:
+                - name: MLFLOW_TRACKING_URI
+                  value: http://mlflow.fraud.svc.cluster.local:5000
+                - name: IMAGE_TAG
+                  value: __IMAGE_TAG__
+              resources:  # measured locally: 1.3 GB peak with 4 threads (train.n_jobs)
+                requests:
+                  cpu: "2"
+                  memory: 1536Mi
+                limits:
+                  cpu: "4"
+                  memory: 2560Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              volumeMounts:
+                # Same relative paths as on the laptop, so configs/config.yaml works unchanged.
+                - name: config
+                  mountPath: /app/configs
+                  readOnly: true
+                - name: data
+                  mountPath: /app/data/processed
+                  readOnly: true
+                - name: tmp  # the only writable path (MLflow upload buffers)
+                  mountPath: /tmp
+          volumes:
+            - name: config
+              configMap:
+                name: fraud-config
+            - name: data
+              persistentVolumeClaim:
+                claimName: fraud-data
+                readOnly: true
+            - name: tmp
+              emptyDir:
+                sizeLimit: 1Gi

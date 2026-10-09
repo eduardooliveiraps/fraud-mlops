@@ -1,0 +1,7 @@
+# Allow-list: only what the image needs. data/, .state/, .venv/ and mlruns/ stay out by
+# construction, so no dataset file can end up in an image.
+*
+!requirements.lock
+!src/
+src/*.egg-info
+**/__pycache__

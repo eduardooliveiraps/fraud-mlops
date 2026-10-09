@@ -54,8 +54,10 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def train_and_register(cfg: Config, df: pd.DataFrame, data_sha256: str) -> tuple[str, pd.DataFrame]:
-    """Train on train months, register a new model version. Returns (version, test split)."""
+def train_and_register(
+    cfg: Config, df: pd.DataFrame, tags: dict[str, str]
+) -> tuple[str, pd.DataFrame]:
+    """Train, register a new model version with lineage `tags`. Returns (version, test split)."""
     model = build_model(cfg.train)  # fails on bad params before any heavy work
     split = time_split(validate(df), cfg.split)
     model.fit(
@@ -95,7 +97,7 @@ def train_and_register(cfg: Config, df: pd.DataFrame, data_sha256: str) -> tuple
                 **{f"test_{k}": v for k, v in test_metrics.items()},
             }
         )
-        mlflow.set_tag("data_sha256", data_sha256)
+        mlflow.set_tags(tags)
         # Everything serving needs travels with the model: one URI is enough.
         info = mlflow.lightgbm.log_model(
             model,
@@ -109,7 +111,8 @@ def train_and_register(cfg: Config, df: pd.DataFrame, data_sha256: str) -> tuple
             },
         )
     version = str(info.registered_model_version)
-    MlflowClient().set_model_version_tag(cfg.mlflow.model_name, version, "data_sha256", data_sha256)
+    for key, value in tags.items():
+        MlflowClient().set_model_version_tag(cfg.mlflow.model_name, version, key, value)
     logger.info(
         "Registered %s version %s: test recall_at_fpr %.4f, pr_auc %.4f, threshold %.4f",
         cfg.mlflow.model_name, version,
@@ -128,9 +131,11 @@ def main(argv: list[str] | None = None) -> GateResult:
         raise RuntimeError("MLFLOW_TRACKING_URI is not set (e.g. http://localhost:5000)")
     cfg = load_config(args.config)
     build_model(cfg.train)  # fail fast on bad params before loading 1M rows
-    version, test = train_and_register(
-        cfg, load_base(cfg.data.parquet), file_sha256(cfg.data.parquet)
-    )
+    # Lineage: which data and (in a container, where there is no .git) which image built it.
+    tags = {"data_sha256": file_sha256(cfg.data.parquet)}
+    if image_tag := os.environ.get("IMAGE_TAG"):
+        tags["image_tag"] = image_tag
+    version, test = train_and_register(cfg, load_base(cfg.data.parquet), tags)
     return run_gate(cfg, version, test)
 
 

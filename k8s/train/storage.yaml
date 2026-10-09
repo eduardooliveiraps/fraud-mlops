@@ -1,0 +1,27 @@
+# Read-only volume over the kind host mount of data/processed (see kind-config.yaml).
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: fraud-data
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes: [ReadOnlyMany]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  hostPath:
+    path: /mnt/data
+    type: Directory
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fraud-data
+  namespace: fraud
+spec:
+  accessModes: [ReadOnlyMany]
+  storageClassName: ""
+  volumeName: fraud-data
+  resources:
+    requests:
+      storage: 1Gi

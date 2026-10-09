@@ -8,6 +8,10 @@ nodes:
       # Host folder -> node folder; the MLflow PersistentVolume points at the node folder.
       - hostPath: .state/mlflow
         containerPath: /mnt/mlflow
+      # Training data, read-only: the Job reads it, nothing in the cluster can change it.
+      - hostPath: data/processed
+        containerPath: /mnt/data
+        readOnly: true
     extraPortMappings:
       # localhost:5000 -> MLflow Service NodePort. 127.0.0.1 keeps it off the local network.
       - containerPort: 30500

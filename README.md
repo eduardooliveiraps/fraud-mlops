@@ -8,13 +8,14 @@ Plan, status and design decisions: [docs/ROADMAP.md](docs/ROADMAP.md).
 Requires Python 3.11 (Linux/WSL2).
 
 ```bash
-make install   # create .venv from the pinned requirements.lock
+make install   # create .venv from the pinned requirements-dev.lock
 make lint      # ruff
 make test      # pytest, synthetic data only
 make data      # Base.csv -> Parquet (paths in configs/config.yaml)
 ```
 
-`make lock` re-resolves the version ranges in `pyproject.toml` and rewrites `requirements.lock`.
+`make lock` re-resolves the version ranges in `pyproject.toml` and rewrites both lock files:
+`requirements-dev.lock` (laptop, CI) and `requirements.lock` (runtime only, used by the image).
 
 ## Local cluster runbook
 
@@ -29,12 +30,23 @@ make train         # validate -> train -> register in MLflow -> gate (moves @cha
 make cluster-down  # delete the cluster; MLflow data in .state/mlflow/ is kept
 ```
 
+Training inside the cluster (same code, packaged as an image; data mounted read-only):
+
+```bash
+make image         # build fraud-mlops:<git describe --dirty> and load it into kind
+make train-deploy  # config as ConfigMap + weekly CronJob "fraud-train" using that image
+make train-job     # run the CronJob's template now; waits, prints logs, fails if the Job fails
+```
+
 | Symptom | Check |
 |---------|-------|
 | `docker: ... EOF` while pulling | Network hiccup: run the command again. |
 | MLflow pod restarts | `kubectl -n fraud describe pod -l app=mlflow` (look for `OOMKilled`). |
 | `localhost:5000` refuses connections | `kubectl -n fraud get pods` until `1/1 Running`. |
 | Start with an empty MLflow | `make cluster-down && rm -rf .state/mlflow && make cluster-up mlflow-up` |
+| Training Job failed | `make train-job` prints the pod logs; `kubectl -n fraud get jobs` shows history. |
+| Pod stuck in `ErrImageNeverPull`/`ImagePullBackOff` | Image not in the node: `make image` (after every `cluster-up`). |
+| `kind load` fails with `content digest ... not found` | `docker save fraud-mlops:<tag> -o img.tar && kind load image-archive img.tar --name fraud` |
 
 ## Data facts and evaluation
 

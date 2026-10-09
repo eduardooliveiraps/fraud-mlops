@@ -43,7 +43,7 @@ def test_promotion_sequence(cfg):
     def run(data):
         from fraud.gate import run_gate
 
-        version, test = train_and_register(cfg, data, data_sha256="abc")
+        version, test = train_and_register(cfg, data, tags={"data_sha256": "abc"})
         return version, run_gate(cfg, version, test)
 
     v1, r1 = run(shuffled_train_labels(df, cfg))
@@ -70,11 +70,15 @@ def test_promotion_sequence(cfg):
     assert 0 < meta["threshold"] < 1
 
 
-def test_main_end_to_end(cfg):
+def test_main_end_to_end_records_lineage(cfg, monkeypatch):
     cfg, path = cfg
     make_synthetic(n_rows=5000).to_parquet(cfg.data.parquet)
+    monkeypatch.setenv("IMAGE_TAG", "abc1234-dirty")
     result = main(["--config", str(path)])
     assert result.promoted
+    tags = MlflowClient().get_model_version(cfg.mlflow.model_name, "1").tags
+    assert tags["image_tag"] == "abc1234-dirty"
+    assert len(tags["data_sha256"]) == 64
 
 
 def test_main_requires_tracking_uri(cfg, monkeypatch):

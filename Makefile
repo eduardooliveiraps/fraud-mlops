@@ -12,14 +12,22 @@ CLUSTER := fraud
 KIND := $(BIN)/kind
 KUBECTL := $(BIN)/kubectl --context kind-$(CLUSTER)
 MLFLOW_URL := http://localhost:5000
+# Unique tag per build: commit id, plus "-dirty" if there are uncommitted changes. Never "latest".
+IMAGE := fraud-mlops
+IMAGE_TAG := $(shell git describe --always --dirty)
 
 install:
 	$(PY) -m venv .venv && .venv/bin/pip install -U pip
-	.venv/bin/pip install -r requirements.lock && .venv/bin/pip install --no-deps -e .
-# Re-resolve pyproject.toml ranges in a fresh venv and pin every package exactly.
+	.venv/bin/pip install -r requirements-dev.lock && .venv/bin/pip install --no-deps -e .
+# Re-resolve pyproject.toml ranges in fresh venvs and pin every package exactly:
+# requirements-dev.lock (laptop, CI) and requirements.lock (image, runtime only).
+# The runtime lock is resolved inside the dev lock, so shared packages have equal versions.
 lock:
 	rm -rf .venv-lock && $(PY) -m venv .venv-lock && .venv-lock/bin/pip install -q -U pip
 	.venv-lock/bin/pip install -q -e ".[dev]"
+	.venv-lock/bin/pip freeze --exclude-editable > requirements-dev.lock && rm -rf .venv-lock
+	$(PY) -m venv .venv-lock && .venv-lock/bin/pip install -q -U pip
+	.venv-lock/bin/pip install -q -e . -c requirements-dev.lock
 	.venv-lock/bin/pip freeze --exclude-editable > requirements.lock && rm -rf .venv-lock
 lint:
 	.venv/bin/ruff check src tests notebooks
@@ -57,9 +65,34 @@ cluster-down:
 mlflow-up:
 	$(KUBECTL) apply -f k8s/namespace.yaml -f k8s/mlflow/
 	$(KUBECTL) -n fraud rollout status deployment/mlflow --timeout 300s
+# Build the image and copy it into the kind node (no registry needed locally).
+image:
+	docker build -t $(IMAGE):$(IMAGE_TAG) .
+	$(KIND) load docker-image $(IMAGE):$(IMAGE_TAG) --name $(CLUSTER)
+
+# Config as a ConfigMap, data volume, and the CronJob pointing at the current image tag.
+train-deploy:
+	$(KUBECTL) -n fraud create configmap fraud-config --from-file=configs/config.yaml \
+		--dry-run=client -o yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) apply -f k8s/train/storage.yaml
+	sed 's/__IMAGE_TAG__/$(IMAGE_TAG)/g' k8s/train/cronjob.yaml | $(KUBECTL) apply -f -
+
+# Run the CronJob's template now, wait until it completes or fails, then print its logs.
+train-job:
+	@JOB=train-manual-$$(date +%Y%m%d-%H%M%S); \
+	$(KUBECTL) -n fraud create job $$JOB --from=cronjob/fraud-train; \
+	echo "Waiting for $$JOB ..."; \
+	while :; do \
+		STATE=$$($(KUBECTL) -n fraud get job $$JOB -o jsonpath='{.status.conditions[*].type}'); \
+		case "$$STATE" in *Complete*|*Failed*) break;; esac; sleep 5; \
+	done; \
+	$(KUBECTL) -n fraud logs -l job-name=$$JOB --prefix --tail=-1; \
+	echo "$$JOB: $$STATE"; case "$$STATE" in *Complete*) ;; *) exit 1;; esac
+
 mlflow-check:
 	curl -fsS $(MLFLOW_URL)/health && echo
 	curl -fsS -X POST -H "Content-Type: application/json" -d '{"max_results": 5}' \
 		$(MLFLOW_URL)/api/2.0/mlflow/experiments/search && echo
 
-.PHONY: install lock lint test data train tools cluster-up cluster-down mlflow-up mlflow-check
+.PHONY: install lock lint test data train tools cluster-up cluster-down mlflow-up mlflow-check \
+	image train-deploy train-job

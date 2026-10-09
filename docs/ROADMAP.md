@@ -9,7 +9,7 @@ Status: todo | design | in progress | review | done. One part in progress at a t
 | 2 | Cluster + MLflow spike (RAM check) | done | 1 |
 | 3 | Evaluation core: time split, metrics, threshold | done | 1 |
 | 4 | Training + gate (local, against cluster MLflow) | done | 2, 3 |
-| 5 | Training Job / CronJob on Kubernetes | todo | 4 |
+| 5 | Training Job / CronJob on Kubernetes | done | 4 |
 | 6 | Scoring API (local) | todo | 3, 4 |
 | 7 | Serving on Kubernetes: probes, HPA, rollback, load test | todo | 5, 6 |
 | 8 | Monitoring: Prometheus, Grafana, PSI alert | todo | 7 |
@@ -42,6 +42,14 @@ Status: todo | design | in progress | review | done. One part in progress at a t
   `MLFLOW_TRACKING_URI` (required). Out = new version of `fraud-lgbm`; run has params, `valid_*`
   and `test_*` metrics, `threshold`. Model metadata: `threshold`, `features`, `reference_edges`,
   `reference_fractions` (PSI reference = test-month scores). Version tag `data_sha256`.
+- **Image** (`make image`): `fraud-mlops:<git describe --always --dirty>`, one image for training
+  and serving, runtime deps from `requirements.lock`, uid 10001, no config or data inside
+  (`.dockerignore` is an allow-list). Loaded into kind with `kind load` (no registry until part 9).
+- **Training in the cluster** (`make train-deploy`, `make train-job`): CronJob `fraud-train`
+  (Mondays 03:00 UTC) is the only Job template. Config from ConfigMap `fraud-config` at
+  `/app/configs`, data from read-only PVC `fraud-data` at `/app/data/processed`,
+  `MLFLOW_TRACKING_URI` = in-cluster MLflow, `IMAGE_TAG` logged as a version tag.
+  Job outcome: Complete (gate promoted or rejected) or Failed (error, nothing registered).
 - **Gate** (`fraud.gate.run_gate`): re-scores candidate and `@champion` on the same test months;
   promotes if recall gain >= `gate.min_recall_gain` and PR-AUC drop <= `gate.max_pr_auc_drop`.
   Version tags `gate_decision`, `gate_reason`, `gate_compared_to`. Rejection is not an error.
@@ -59,7 +67,8 @@ during load tests.
 |-----------|-----------------|----------|
 | kind node, whole cluster idle (incl. MLflow) | - | 1.2 GiB |
 | MLflow server (1 worker, job runner off) | 250m, 384Mi / 1 CPU, 1Gi | ~350 MiB idle, 355 MiB peak during a run |
-| Training, 1M rows, 4 threads (local, part 4) | (Job limits set in part 5) | 1.3 GB peak RSS, 47 s |
+| Training, 1M rows, 4 threads (local, part 4) | - | 1.3 GB peak RSS, 47 s |
+| Training Job (pod, part 5) | 2 CPU, 1536Mi / 4 CPU, 2560Mi | ~1.15 GiB working set, ~60 s |
 
 Measured with `docker stats fraud-control-plane` and the pod's cgroup `memory.current`/`memory.peak`.
 Rebuilding the cluster from scratch (`cluster-down`, `cluster-up`, `mlflow-up`) takes ~2 min.
@@ -137,3 +146,18 @@ Format: date - decision - why - alternatives considered.
 - 2026-10-09 - Pandera 0.33.1 (0.34 was days old); validation errors summarised without values -
   Pandera's own report contains the failing values, which would be row-level data in logs.
 - 2026-10-09 - Ruff E501 enabled - The declared 100-char limit is now checked by `make lint`.
+- 2026-10-09 - One image for training and serving - Both run byte-identical `prepare_features`,
+  the strongest guard against training/serving skew; one Dockerfile, one CI build. Alt: two images.
+- 2026-10-09 - Two locks: `requirements-dev.lock` and runtime `requirements.lock` (resolved inside
+  the dev lock) - The image gets only what it runs (59 vs 120 packages). Alt: one lock.
+- 2026-10-09 - `mlflow-skinny` at runtime, full `mlflow` in dev only - Client-only package, ~190 MB
+  and 36 packages fewer; tests need the full package for a SQLite tracking store.
+  Lesson: skinny lacks `skops` (MLflow's safe model format), found only by running in the image;
+  now an explicit dependency. The part 9 smoke test runs the image, so CI catches such gaps.
+- 2026-10-09 - CronJob as the only Job template; manual runs use `create job --from=cronjob` -
+  Scheduled and manual runs cannot drift apart. Alt: separate Job manifest.
+- 2026-10-09 - `kind load` instead of a registry until part 9 - Works with Docker's containerd
+  store for locally built images (not for pulled multi-platform images); fallback documented.
+- 2026-10-09 - Job: `backoffLimit: 1`, deadline 30 min, TTL 1 day, `Forbid` concurrency, read-only
+  root filesystem (+ `/tmp` emptyDir) - One retry covers network errors; deterministic errors
+  (bad config) simply fail twice, ~30 s wasted. Alt: no retry.

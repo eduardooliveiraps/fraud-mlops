@@ -6,20 +6,28 @@ build-backend = "setuptools.build_meta"
 name = "fraud-mlops"
 version = "0.1.0"
 requires-python = ">=3.11"
-# Supported ranges; exact versions live in requirements.lock (`make lock`).
+# Supported ranges; exact versions live in requirements*.lock (`make lock`).
 dependencies = [
     "pandas>=3.0,<4",
     "numpy>=2.4,<3",
     "pyarrow>=25,<26",
     "scikit-learn>=1.9,<2",
     "lightgbm>=4.7,<5",
-    "mlflow>=3.16.1,<3.17",  # must match the server image in k8s/mlflow; bump both together
+    # Client only (no server). Must match the server image in k8s/mlflow; bump together.
+    "mlflow-skinny>=3.16.1,<3.17",
+    "skops>=0.16,<0.17",  # MLflow saves/loads the LightGBM sklearn model with skops (not pickle)
     "pyyaml>=6.0,<7",
     "pandera[pandas]>=0.33.1,<0.34",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=9.1,<10", "ruff>=0.16,<0.17", "ipykernel>=6,<8", "matplotlib>=3.10,<4"]
+dev = [
+    "pytest>=9.1,<10",
+    "ruff>=0.16,<0.17",
+    "ipykernel>=6,<8",
+    "matplotlib>=3.10,<4",
+    "mlflow>=3.16.1,<3.17",  # full package: tests use a throwaway SQLite tracking store
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
