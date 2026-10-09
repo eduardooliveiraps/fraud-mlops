@@ -16,6 +16,25 @@ make data      # Base.csv -> Parquet (paths in configs/config.yaml)
 
 `make lock` re-resolves the version ranges in `pyproject.toml` and rewrites `requirements.lock`.
 
+## Local cluster runbook
+
+Requires Docker (Docker Desktop with WSL integration) and ~10 GB RAM for WSL.
+
+```bash
+make tools         # pinned kind + kubectl into ~/.local/bin (checksums verified)
+make cluster-up    # one-node kind cluster "fraud" (~1.2 GiB RAM)
+make mlflow-up     # MLflow server + registry; UI at http://localhost:5000
+make mlflow-check  # health check + list experiments
+make cluster-down  # delete the cluster; MLflow data in .state/mlflow/ is kept
+```
+
+| Symptom | Check |
+|---------|-------|
+| `docker: ... EOF` while pulling | Network hiccup: run the command again. |
+| MLflow pod restarts | `kubectl -n fraud describe pod -l app=mlflow` (look for `OOMKilled`). |
+| `localhost:5000` refuses connections | `kubectl -n fraud get pods` until `1/1 Running`. |
+| Start with an empty MLflow | `make cluster-down && rm -rf .state/mlflow && make cluster-up mlflow-up` |
+
 ## Dataset and license
 
 - Uses the **Base** variant of the Bank Account Fraud (BAF) Dataset Suite: Jesus et al.,

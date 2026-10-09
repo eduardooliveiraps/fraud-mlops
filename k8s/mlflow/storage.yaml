@@ -1,0 +1,27 @@
+# Static PersistentVolume over the kind host mount, so data survives pod and cluster restarts.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: mlflow-data
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""  # empty: do not let the default StorageClass create a new volume
+  hostPath:
+    path: /mnt/mlflow
+    type: Directory
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mlflow-data
+  namespace: fraud
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: ""
+  volumeName: mlflow-data  # bind to exactly the volume above
+  resources:
+    requests:
+      storage: 5Gi

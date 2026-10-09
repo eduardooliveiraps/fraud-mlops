@@ -6,7 +6,7 @@ Status: todo | design | in progress | review | done. One part in progress at a t
 |---|------|--------|------------|
 | 0 | Data loading, schema, synthetic data | done | - |
 | 1 | Foundations: config, pinned deps, logging, basic CI | done | 0 |
-| 2 | Cluster + MLflow spike (RAM check) | todo | 1 |
+| 2 | Cluster + MLflow spike (RAM check) | done | 1 |
 | 3 | Evaluation core: time split, metrics, threshold | todo | 1 |
 | 4 | Training + gate (local, against cluster MLflow) | todo | 2, 3 |
 | 5 | Training Job / CronJob on Kubernetes | todo | 4 |
@@ -27,6 +27,10 @@ Status: todo | design | in progress | review | done. One part in progress at a t
   `evaluate(y, scores, cfg) -> {pr_auc, recall_at_fpr, ...}`.
   `choose_threshold(y, scores, costs) -> float` (chosen on valid, reported on test).
 - **Features** (`fraud.features`): one preprocessing function, used by both training and serving.
+- **Cluster** (`make tools cluster-up`): kind cluster `fraud`, kubectl context `kind-fraud`,
+  namespace `fraud`. `make cluster-down` deletes it; MLflow data in `.state/mlflow/` survives.
+- **MLflow** (`make mlflow-up`): `http://mlflow.fraud.svc.cluster.local:5000` in the cluster,
+  `http://localhost:5000` from WSL/Windows. Server and client are both mlflow 3.16.1.
 - **Training**: in = Parquet path + config + `MLFLOW_TRACKING_URI`.
   Out = registered version of `fraud-lgbm` with metrics, threshold and a reference score histogram.
 - **Gate**: compares the new version and `@champion` on the same test months. Moves `champion`
@@ -41,9 +45,13 @@ Status: todo | design | in progress | review | done. One part in progress at a t
 WSL memory cap: 10 GB (`.wslconfig`). Estimated peak: ~5-6.5 GB. Do not run the training Job
 during load tests.
 
-| Component | Request / limit | Measured peak |
-|-----------|-----------------|---------------|
-| (filled in during part 2) | | |
+| Component | Request / limit | Measured |
+|-----------|-----------------|----------|
+| kind node, whole cluster idle (incl. MLflow) | - | 1.2 GiB |
+| MLflow server (1 worker, job runner off) | 250m, 384Mi / 1 CPU, 1Gi | ~350 MiB idle, 355 MiB peak during a run |
+
+Measured with `docker stats fraud-control-plane` and the pod's cgroup `memory.current`/`memory.peak`.
+Rebuilding the cluster from scratch (`cluster-down`, `cluster-up`, `mlflow-up`) takes ~2 min.
 
 ## Design decisions
 Format: date - decision - why - alternatives considered.
@@ -76,3 +84,19 @@ Format: date - decision - why - alternatives considered.
 - 2026-10-09 - Dependencies: version ranges in `pyproject.toml`, exact pins in `requirements.lock`
   (built by `make lock` in a fresh venv) - Ranges say what we support, the lock makes every
   install identical (laptop, CI, later the image). Alt: pip-tools or uv (extra tools).
+- 2026-10-09 - Pin mlflow 3.16.1 for server image and client - 3.17.0 was 2 days old; a release
+  with a few weeks of patches is safer, and identical versions rule out client/server mismatch.
+  Bump both together on purpose. Alt: latest 3.17.0.
+- 2026-10-09 - MLflow data in a static PersistentVolume over a kind host mount (`.state/mlflow/`)
+  - kind's default storage lives inside the node container and is deleted with the cluster.
+  Alt: default StorageClass (data lost on `cluster-down`).
+- 2026-10-09 - MLflow reached via NodePort 30500 -> `127.0.0.1:5000` (kind port mapping) - Always
+  on, no `kubectl port-forward` terminal to keep alive; bound to localhost only because MLflow has
+  no auth. Alt: port-forward.
+- 2026-10-09 - MLflow background job runner disabled (`MLFLOW_SERVER_ENABLE_JOB_EXECUTION=false`)
+  - It starts several worker processes for GenAI/async jobs we don't use and got the pod
+  OOMKilled at a 1 GiB limit. Alt: raise the limit to ~2 GiB.
+- 2026-10-09 - CLI tools (kind v0.33.0, kubectl v1.37.1) pinned with sha256 in the Makefile,
+  installed to `~/.local/bin` by `make tools` - Same versions everywhere, and a tampered or
+  corrupted download fails instead of installing. Kubernetes v1.37.0 = kind's default node image.
+  Alt: apt/snap packages (unpinned, versions vary by machine).

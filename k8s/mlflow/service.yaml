@@ -1,0 +1,16 @@
+# Stable address for MLflow: mlflow.fraud.svc.cluster.local:5000 in the cluster,
+# NodePort 30500 (-> localhost:5000 via kind-config.yaml) from the host.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow
+  namespace: fraud
+spec:
+  type: NodePort
+  selector:
+    app: mlflow
+  ports:
+    - name: http
+      port: 5000
+      targetPort: http
+      nodePort: 30500

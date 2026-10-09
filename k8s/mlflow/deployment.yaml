@@ -1,0 +1,76 @@
+# MLflow tracking server + model registry. SQLite allows one writer: 1 replica, Recreate.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow
+  namespace: fraud
+  labels:
+    app: mlflow
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mlflow
+  template:
+    metadata:
+      labels:
+        app: mlflow
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000  # owner of .state/mlflow on the host
+        runAsGroup: 1000
+      containers:
+        - name: mlflow
+          # Same version as the mlflow client in requirements.lock.
+          image: ghcr.io/mlflow/mlflow:v3.16.1@sha256:06058cc872276873e9759c635e773342aca4731e240f6d20d88ea43774083984
+          command: [mlflow, server]
+          args:
+            - --backend-store-uri=sqlite:////mlflow/mlflow.db
+            - --artifacts-destination=/mlflow/artifacts
+            - --serve-artifacts
+            - --host=0.0.0.0
+            - --port=5000
+            - --workers=1
+            - --allowed-hosts=localhost:5000,mlflow.fraud.svc.cluster.local:5000
+          env:
+            - name: HOME  # the image has no home for uid 1000
+              value: /tmp
+            # Off: background job workers (GenAI/async jobs we don't use) need >1 GiB RAM.
+            - name: MLFLOW_SERVER_ENABLE_JOB_EXECUTION
+              value: "false"
+          ports:
+            - name: http
+              containerPort: 5000
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 384Mi  # measured: ~350 MiB idle and during a run
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: data
+              mountPath: /mlflow
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: mlflow-data

@@ -9,3 +9,4 @@ mlflow.db
 mlruns/
 mlartifacts/
 .venv-lock/
+.state/
