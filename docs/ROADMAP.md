@@ -13,7 +13,7 @@ Status: todo | design | in progress | review | done. One part in progress at a t
 | 6 | Scoring API (local) | done | 3, 4 |
 | 7 | Serving on Kubernetes: probes, HPA, rollback, load test | done | 5, 6 |
 | 8 | Monitoring: Prometheus, Grafana, PSI alert | done | 7 |
-| 9 | CI/CD: image to GHCR, kind smoke test | review (awaiting GitHub run) | 7 |
+| 9 | CI/CD: image to GHCR, kind smoke test | done (PR path checked in part 10's PR) | 7 |
 | 10 | Terraform (kind + helm) and final README | todo | all |
 | 10c | Optional: GCP Terraform module, validate only | decide after 10b | 10 |
 
@@ -78,7 +78,8 @@ Status: todo | design | in progress | review | done. One part in progress at a t
   (`max(fraud_score_psi) > 0.2` for 5m). `prometheus-server.monitoring.svc.cluster.local:9090`,
   `localhost:9090`. Grafana `localhost:3000`, data source uid `prometheus`, dashboard uid
   `fraud-api`. A test checks that every metric the dashboard and rule query is exposed by the API.
-- **CI** (`.github/workflows/ci.yml`): `lint-test` then `smoke` (fresh kind cluster, synthetic
+- **CI** (`.github/workflows/ci.yml`, first green run 2026-10-09: lint-test 1.6 min, smoke 3.6 min,
+  image public at `ghcr.io/eduardooliveiraps/fraud-mlops:2d60948`): `lint-test` then `smoke` (fresh kind cluster, synthetic
   data via `python -m fraud.data --synthetic N`, which refuses to overwrite an existing file;
   ends with `make smoke` = `tests/test_live_api.py` against `localhost:8000`). On push to `main`:
   `make push REGISTRY=ghcr.io/<owner>` -> `ghcr.io/<owner>/fraud-mlops:<git describe>`.
