@@ -10,6 +10,8 @@ from mlflow import MlflowClient
 from fraud.config import Config, GateConfig
 from fraud.features import score
 from fraud.metrics import pr_auc, recall_at_fpr
+from fraud.registry import champion_version as get_champion_version
+from fraud.registry import pinned_uri
 from fraud.schema import TARGET
 
 logger = logging.getLogger(__name__)
@@ -54,12 +56,11 @@ def run_gate(cfg: Config, version: str, test: pd.DataFrame) -> GateResult:
     client = MlflowClient()
     name, alias = cfg.mlflow.model_name, cfg.mlflow.champion_alias
     target_fpr = cfg.evaluation.target_fpr
-    candidate = _quality(f"models:/{name}/{version}", test, target_fpr)
+    candidate = _quality(pinned_uri(cfg.mlflow, version), test, target_fpr)
 
-    aliases = client.get_registered_model(name).aliases
-    champion_version = str(aliases[alias]) if alias in aliases else None  # MLflow returns an int
+    champion_version = get_champion_version(cfg.mlflow)
     champion = (
-        _quality(f"models:/{name}/{champion_version}", test, target_fpr)
+        _quality(pinned_uri(cfg.mlflow, champion_version), test, target_fpr)
         if champion_version
         else None
     )

@@ -22,6 +22,8 @@ install:
 # Re-resolve pyproject.toml ranges in fresh venvs and pin every package exactly:
 # requirements-dev.lock (laptop, CI) and requirements.lock (image, runtime only).
 # The runtime lock is resolved inside the dev lock, so shared packages have equal versions.
+# Cool-down: only releases at least 14 days old are considered (supply-chain safety).
+lock: export PIP_UPLOADED_PRIOR_TO := P14D
 lock:
 	rm -rf .venv-lock && $(PY) -m venv .venv-lock && .venv-lock/bin/pip install -q -U pip
 	.venv-lock/bin/pip install -q -e ".[dev]"
@@ -38,6 +40,11 @@ test:
 train:
 	MLFLOW_TRACKING_URI=$(MLFLOW_URL) MLFLOW_DISABLE_AGENT_HINT=1 \
 		.venv/bin/python -m fraud.train --config configs/config.yaml
+# Scoring API on localhost:8000, serving the champion's pinned version from the cluster's MLflow.
+serve:
+	export MLFLOW_TRACKING_URI=$(MLFLOW_URL) MLFLOW_DISABLE_AGENT_HINT=1; \
+	MODEL_URI=$$(.venv/bin/python -m fraud.registry --config configs/config.yaml) && \
+	MODEL_URI=$$MODEL_URI .venv/bin/uvicorn --factory fraud.serve:create_app --port 8000
 data:
 	.venv/bin/python -m fraud.data --config configs/config.yaml
 
@@ -94,5 +101,5 @@ mlflow-check:
 	curl -fsS -X POST -H "Content-Type: application/json" -d '{"max_results": 5}' \
 		$(MLFLOW_URL)/api/2.0/mlflow/experiments/search && echo
 
-.PHONY: install lock lint test data train tools cluster-up cluster-down mlflow-up mlflow-check \
+.PHONY: install lock lint test data train serve tools cluster-up cluster-down mlflow-up mlflow-check \
 	image train-deploy train-job

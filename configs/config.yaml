@@ -42,3 +42,4 @@ gate:  # the new model replaces the champion only if, on the same test months:
 
 monitoring:
   psi_bins: 10  # quantile bins of test-month scores, the PSI reference for serving
+  psi_window: 1000  # serving: PSI over the last N scores per pod (NaN until N are seen)

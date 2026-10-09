@@ -75,10 +75,13 @@ class GateConfig:
 @dataclass(frozen=True)
 class MonitoringConfig:
     psi_bins: int
+    psi_window: int
 
     def __post_init__(self) -> None:
         if self.psi_bins < 2:
             raise ValueError(f"psi_bins must be >= 2, got {self.psi_bins}")
+        if self.psi_window < self.psi_bins:
+            raise ValueError(f"psi_window must be >= psi_bins, got {self.psi_window}")
 
 
 @dataclass(frozen=True)
@@ -155,7 +158,7 @@ def load_config(path: Path) -> Config:
     params = _mapping(params, "train.params", set(params) if isinstance(params, dict) else set())
     mlflow = _mapping(raw["mlflow"], "mlflow", {"experiment", "model_name", "champion_alias"})
     gate = _mapping(raw["gate"], "gate", {"min_recall_gain", "max_pr_auc_drop"})
-    monitoring = _mapping(raw["monitoring"], "monitoring", {"psi_bins"})
+    monitoring = _mapping(raw["monitoring"], "monitoring", {"psi_bins", "psi_window"})
     return Config(
         data=DataConfig(
             raw_csv=_path(data["raw_csv"], "data.raw_csv"),
@@ -171,5 +174,7 @@ def load_config(path: Path) -> Config:
         ),
         mlflow=MlflowConfig(**{k: _str(v, f"mlflow.{k}") for k, v in mlflow.items()}),
         gate=GateConfig(**{k: _number(v, f"gate.{k}") for k, v in gate.items()}),
-        monitoring=MonitoringConfig(psi_bins=_int(monitoring["psi_bins"], "monitoring.psi_bins")),
+        monitoring=MonitoringConfig(
+            **{k: _int(v, f"monitoring.{k}") for k, v in monitoring.items()}
+        ),
     )

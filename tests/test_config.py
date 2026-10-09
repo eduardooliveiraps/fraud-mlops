@@ -71,6 +71,7 @@ def _drop(section: str, key: str):
         (_set("mlflow", "model_name", ""), "'mlflow.model_name' must be a non-empty string"),
         (_set("gate", "min_recall_gain", -0.1), "Gate margins must be >= 0"),
         (_set("monitoring", "psi_bins", 1), "psi_bins must be >= 2"),
+        (_set("monitoring", "psi_window", 5), "psi_window must be >= psi_bins"),
     ],
 )
 def test_invalid_config(config_dict, write_config, edit, error):

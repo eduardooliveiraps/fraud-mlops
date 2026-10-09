@@ -16,6 +16,7 @@ make data      # Base.csv -> Parquet (paths in configs/config.yaml)
 
 `make lock` re-resolves the version ranges in `pyproject.toml` and rewrites both lock files:
 `requirements-dev.lock` (laptop, CI) and `requirements.lock` (runtime only, used by the image).
+It only considers releases at least 14 days old (dependency cool-down).
 
 ## Local cluster runbook
 
@@ -28,6 +29,12 @@ make mlflow-up     # MLflow server + registry; UI at http://localhost:5000
 make mlflow-check  # health check + list experiments
 make train         # validate -> train -> register in MLflow -> gate (moves @champion if better)
 make cluster-down  # delete the cluster; MLflow data in .state/mlflow/ is kept
+```
+
+Scoring API on the laptop (serves the champion's pinned version from the cluster's MLflow):
+
+```bash
+make serve         # http://localhost:8000/docs (OpenAPI), /score, /health, /metrics
 ```
 
 Training inside the cluster (same code, packaged as an image; data mounted read-only):
@@ -81,6 +88,22 @@ At the cost-based threshold (0.0287, chosen on month 5) the model flags 6.1% of 
 applications and catches 58.7% of frauds (precision 12.1%). Expected cost: 176 per 1,000
 applications, against 280 for flagging nothing. Training takes ~47 s and ~1.3 GB RAM.
 
+## Scoring API
+
+`POST /score` takes one application with the 29 model features (schema generated from
+`src/fraud/schema.py`; unknown fields, wrong types and unknown categories get `422`):
+
+```json
+{"score": 0.0123, "flagged": false, "threshold": 0.0287, "model_version": "1"}
+```
+
+`flagged` is `score >= threshold`; the threshold travels with the model version.
+`GET /metrics` (Prometheus): `fraud_requests_total{status}`, `fraud_request_latency_seconds`,
+`fraud_score`, `fraud_score_psi` (last 1,000 scores vs the training reference; NaN until full),
+`fraud_model_info{version}`. On 1,000 held-out applications the API returns exactly the
+offline scores (max difference 0.0); local latency p50 14 ms, p99 23 ms.
+
+## Dataset and license
 
 - Uses the **Base** variant of the Bank Account Fraud (BAF) Dataset Suite: Jesus et al.,
   "Turning the Tables: Biased, Imbalanced, Dynamic Tabular Datasets for ML Evaluation",

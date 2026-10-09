@@ -17,6 +17,7 @@ from fraud.drift import bin_fractions, quantile_edges
 from fraud.features import FEATURES, prepare_features, score
 from fraud.gate import GateResult, run_gate
 from fraud.metrics import choose_threshold, evaluate
+from fraud.registry import require_tracking_uri
 from fraud.schema import TARGET
 from fraud.split import time_split
 from fraud.validate import validate
@@ -126,9 +127,7 @@ def main(argv: list[str] | None = None) -> GateResult:
     parser.add_argument("--config", type=Path, default=Path("configs/config.yaml"))
     args = parser.parse_args(argv)
 
-    # Without this MLflow silently writes to a local ./mlruns folder.
-    if not os.environ.get("MLFLOW_TRACKING_URI"):
-        raise RuntimeError("MLFLOW_TRACKING_URI is not set (e.g. http://localhost:5000)")
+    require_tracking_uri()
     cfg = load_config(args.config)
     build_model(cfg.train)  # fail fast on bad params before loading 1M rows
     # Lineage: which data and (in a container, where there is no .git) which image built it.

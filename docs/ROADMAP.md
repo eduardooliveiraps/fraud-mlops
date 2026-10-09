@@ -10,7 +10,7 @@ Status: todo | design | in progress | review | done. One part in progress at a t
 | 3 | Evaluation core: time split, metrics, threshold | done | 1 |
 | 4 | Training + gate (local, against cluster MLflow) | done | 2, 3 |
 | 5 | Training Job / CronJob on Kubernetes | done | 4 |
-| 6 | Scoring API (local) | todo | 3, 4 |
+| 6 | Scoring API (local) | done | 3, 4 |
 | 7 | Serving on Kubernetes: probes, HPA, rollback, load test | todo | 5, 6 |
 | 8 | Monitoring: Prometheus, Grafana, PSI alert | todo | 7 |
 | 9 | CI/CD: image to GHCR, kind smoke test | todo | 7 |
@@ -53,10 +53,18 @@ Status: todo | design | in progress | review | done. One part in progress at a t
 - **Gate** (`fraud.gate.run_gate`): re-scores candidate and `@champion` on the same test months;
   promotes if recall gain >= `gate.min_recall_gain` and PR-AUC drop <= `gate.max_pr_auc_drop`.
   Version tags `gate_decision`, `gate_reason`, `gate_compared_to`. Rejection is not an error.
-- **Serving**: in = `MODEL_URI` (pinned version, e.g. `models:/fraud-lgbm/7`) + `MLFLOW_TRACKING_URI`.
-  Out = `/score`, `/health`, `/metrics`.
+- **Registry** (`fraud.registry`): `python -m fraud.registry --config <yaml>` prints the champion's
+  pinned URI (`models:/fraud-lgbm/<n>`); used by `make serve` and (part 7) `make deploy`.
+- **Serving** (`uvicorn --factory fraud.serve:create_app`, `make serve`): env `MODEL_URI` (pinned
+  version only; aliases rejected), `MLFLOW_TRACKING_URI`, optional `FRAUD_CONFIG`. Refuses to start
+  if the model can't load or its `features` metadata differs from the code's `FEATURES`.
+  `POST /score` (29 features, strict, extra fields forbidden) -> `{score, flagged, threshold,
+  model_version}`; `GET /health` -> 200 once loaded; `GET /metrics` (no redirect).
+  One worker per process; LightGBM uses 1 thread per prediction.
 - **Metrics** (serving -> monitoring): `fraud_requests_total{status}`,
-  `fraud_request_latency_seconds`, `fraud_score`, `fraud_score_psi`.
+  `fraud_request_latency_seconds` (histogram, /score only), `fraud_score` (histogram),
+  `fraud_score_psi` (gauge, last `monitoring.psi_window` scores, NaN until full),
+  `fraud_model_info{version}` (gauge = 1).
 - **Deploy**: `make deploy` resolves `@champion` to a version and sets it on the Deployment.
 
 ## RAM budget (measured in part 2)
@@ -161,3 +169,21 @@ Format: date - decision - why - alternatives considered.
 - 2026-10-09 - Job: `backoffLimit: 1`, deadline 30 min, TTL 1 day, `Forbid` concurrency, read-only
   root filesystem (+ `/tmp` emptyDir) - One retry covers network errors; deterministic errors
   (bad config) simply fail twice, ~30 s wasted. Alt: no retry.
+- 2026-10-09 - Dependency cool-down: `make lock` only accepts releases >= 14 days old
+  (`PIP_UPLOADED_PRIOR_TO=P14D`) - Broken or malicious releases are usually caught in their first
+  days; one rule instead of case-by-case judgement. It moved ~25 pins back one patch (e.g.
+  pydantic 2.14.0 -> 2.13.5). The mlflow pin stays because it must match the server image.
+- 2026-10-09 - One application per request - Online scoring is per application; batch scoring
+  is what training already does. Alt: `/score/batch`.
+- 2026-10-09 - PSI computed at scrape time over the last 1,000 scores per pod, NaN until full -
+  No per-request cost; a quiet pod never raises a false drift alarm. Alt: recompute per request.
+- 2026-10-09 - Serving guards: pinned `MODEL_URI` only, and model `features` must equal the code's
+  `FEATURES` - Keeps `rollout undo` meaningful and stops a model built by other feature code from
+  serving wrong scores. Alt: accept aliases, no check.
+- 2026-10-09 - One uvicorn worker per pod, sync endpoint (thread pool), LightGBM `n_jobs=1` -
+  Scale with pods (HPA); one process per pod keeps Prometheus metrics simple.
+  Alt: several workers + Prometheus multiprocess mode.
+- 2026-10-09 - `/metrics` is a plain route, not a mounted sub-app - A mount answers
+  `307 -> /metrics/`; the test client followed it silently, so a test now forbids redirects.
+- 2026-10-09 - Keep `httpx` for FastAPI's TestClient despite a Starlette warning suggesting
+  `httpx2` - Unknown package to us; httpx works. Revisit when Starlette drops httpx support.
