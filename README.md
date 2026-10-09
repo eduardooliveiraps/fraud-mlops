@@ -56,6 +56,15 @@ make loadtest                   # Locust, 50 users, 3 min (LOAD_USERS=, LOAD_TIM
 kubectl -n fraud rollout history deployment/fraud-api   # which model each revision served
 ```
 
+Monitoring (Prometheus http://localhost:9090, Grafana http://localhost:3000, read-only without
+login):
+
+```bash
+make monitoring        # Prometheus (server only) + Grafana, pinned Helm charts, namespace monitoring
+make grafana-password  # admin password (generated into a Kubernetes Secret, not in the repo)
+make drift-demo        # 4 min real held-out traffic, then 8 min shifted traffic (alert fires)
+```
+
 | Symptom | Check |
 |---------|-------|
 | `docker: ... EOF` while pulling | Network hiccup: run the command again. |
@@ -123,6 +132,27 @@ In the cluster (pods with 1 CPU each, laptop shared with Locust, MLflow and Dock
 | Before scale-out | 2 | 84 req/s | 325 ms | 0 |
 | After HPA scale-out | 4 | 134 req/s | 160 ms | 0 |
 | Rollout to v3 + rollback, under load | 4 | 134 req/s | 140 ms | 0 of 31,938 |
+
+## Monitoring and drift
+
+Prometheus discovers every API pod through its `prometheus.io/scrape` annotation (pods added by
+the autoscaler are scraped automatically) and evaluates one alert rule:
+`FraudScoreDrift` = `max(fraud_score_psi) > 0.2` for 5 minutes. The Grafana dashboard
+(`k8s/grafana/fraud-dashboard.json`, provisioned from the repo) shows request rate by status,
+p50/p99 latency, error share, score distribution, PSI per pod with 0.1/0.2 lines, the alert
+state and pods per model version.
+
+Drift demo (`make drift-demo`; PSI = max over the API pods, sampled every 30 s):
+
+| Phase | Traffic | PSI | Alert |
+|-------|---------|----:|-------|
+| 0-4 min | real held-out applications (months 6-7) | 0.007-0.015 | inactive |
+| from ~4.5 min | shifted (synthetic) applications | 0.49-0.62 | pending at ~5.5 min, **firing at ~10.5 min** |
+| afterwards | 90 s of real traffic again | 0.018 | resolved |
+
+0 failed requests in 102,890. PSI covers each pod's last 1,000 scores, so it changes only with
+traffic. The alert is not sent anywhere: in production, Alertmanager would route it to
+Slack/PagerDuty, and the response is to check the input data and retrain (`make train-job`).
 
 ## Dataset and license
 

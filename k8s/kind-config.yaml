@@ -21,3 +21,10 @@ nodes:
       - containerPort: 30800
         hostPort: 8000
         listenAddress: 127.0.0.1
+      # localhost:9090 -> Prometheus, localhost:3000 -> Grafana.
+      - containerPort: 30900
+        hostPort: 9090
+        listenAddress: 127.0.0.1
+      - containerPort: 30300
+        hostPort: 3000
+        listenAddress: 127.0.0.1

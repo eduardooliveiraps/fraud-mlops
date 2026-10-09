@@ -1,16 +1,12 @@
-"""Load test for POST /score with synthetic applications (no real data). Run: make loadtest."""
+"""Load test for POST /score. Run: make loadtest (LOAD_DATA=real|synthetic, see payloads.py)."""
 
-import json
 import random
 
 from locust import HttpUser, between, task
+from payloads import load_applications
 
-from fraud.data import make_synthetic
-from fraud.features import FEATURES
-
-# Plain Python types for JSON. Fixed seeds: the same payloads in every run.
-APPLICATIONS = json.loads(make_synthetic(n_rows=2000, seed=7)[FEATURES].to_json(orient="records"))
-RNG = random.Random(0)
+APPLICATIONS = load_applications()
+RNG = random.Random(0)  # fixed seed: the same request sequence in every run
 # A Kubernetes Service balances connections, not requests: a kept-alive connection stays on the
 # pod it first reached, so pods added by the HPA would only get new connections. Like a client
 # pool with a maximum connection lifetime, each user reconnects every N requests.

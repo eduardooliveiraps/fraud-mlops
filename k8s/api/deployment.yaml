@@ -27,6 +27,10 @@ spec:
       annotations:
         # Image content id: a rebuilt image under the same tag (e.g. "-dirty") still rolls out.
         fraud-mlops/image-id: "__IMAGE_ID__"
+        # Prometheus discovers and scrapes every API pod (new ones included) via these.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: /metrics
     spec:
       securityContext:
         runAsNonRoot: true

@@ -37,6 +37,9 @@ dev = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.pytest.ini_options]
+pythonpath = ["loadtest"]  # tests import loadtest/payloads.py (not locustfile: locust patches stdlib)
+
 [tool.ruff]
 line-length = 100
 

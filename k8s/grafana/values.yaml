@@ -1,0 +1,44 @@
+# Values for grafana-community/grafana (version pinned in the Makefile). The dashboard JSON is
+# passed with --set-file, so Grafana holds no state: data source and dashboard come from the repo.
+service:
+  type: NodePort
+  nodePort: 30300  # -> localhost:3000 (kind-config.yaml)
+testFramework:
+  enabled: false
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+grafana.ini:
+  analytics:
+    check_for_updates: false
+    reporting_enabled: false
+  auth.anonymous:  # read-only without login; editing needs the generated admin password
+    enabled: true
+    org_role: Viewer
+
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        uid: prometheus  # the dashboard refers to this uid
+        type: prometheus
+        url: http://prometheus-server.monitoring.svc.cluster.local:9090
+        access: proxy
+        isDefault: true
+
+dashboardProviders:
+  dashboardproviders.yaml:
+    apiVersion: 1
+    providers:
+      - name: default
+        folder: ""
+        type: file
+        disableDeletion: true
+        options:
+          path: /var/lib/grafana/dashboards/default

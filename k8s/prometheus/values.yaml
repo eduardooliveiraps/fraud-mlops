@@ -1,0 +1,64 @@
+# Values for prometheus-community/prometheus (version pinned in the Makefile): the server only.
+alertmanager:
+  enabled: false  # alerts fire and are visible in Prometheus/Grafana but are not sent anywhere
+kube-state-metrics:
+  enabled: false
+prometheus-node-exporter:
+  enabled: false
+prometheus-pushgateway:
+  enabled: false
+
+server:
+  global:
+    scrape_interval: 15s
+    evaluation_interval: 15s
+  retention: 2d
+  persistentVolume:
+    enabled: false  # local demo: metrics start empty after a restart
+  service:
+    type: NodePort
+    servicePort: 9090
+    nodePort: 30900  # -> localhost:9090 (kind-config.yaml)
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 768Mi
+
+# Keep only Prometheus itself and pods annotated prometheus.io/scrape: "true" (our API).
+scrapeConfigs:
+  kubernetes-api-servers:
+    enabled: false
+  kubernetes-nodes:
+    enabled: false
+  kubernetes-nodes-cadvisor:
+    enabled: false
+  kubernetes-service-endpoints:
+    enabled: false
+  kubernetes-service-endpoints-slow:
+    enabled: false
+  kubernetes-services:
+    enabled: false
+  kubernetes-pods-slow:
+    enabled: false
+  prometheus-pushgateway:
+    enabled: false
+
+serverFiles:
+  alerting_rules.yml:
+    groups:
+      - name: fraud-model
+        rules:
+          # PSI is NaN while a pod's window fills; NaN > 0.2 is false, so new pods never fire.
+          - alert: FraudScoreDrift
+            expr: max(fraud_score_psi) > 0.2
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Score distribution drifted (PSI {{ $value | printf \"%.2f\" }} > 0.2)"
+              description: >-
+                The last scores of at least one API pod differ from the training reference
+                for 5 minutes. Check the input data; consider retraining (make train-job).

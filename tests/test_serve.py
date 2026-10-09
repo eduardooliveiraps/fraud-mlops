@@ -15,6 +15,8 @@ from fraud.features import FEATURES, score
 from fraud.registry import main as registry_main
 from fraud.train import train_and_register
 
+REPO = Path(__file__).resolve().parents[1]  # some fixtures chdir to a temp dir
+
 
 @pytest.fixture(scope="module")
 def registered(tmp_path_factory):
@@ -136,6 +138,20 @@ def test_concurrent_requests_all_succeed_and_are_counted(client):
     assert codes == [200] * 40
     assert metric(client, 'fraud_requests_total{status="200"}') == 40
     assert metric(client, "fraud_score_count") == 40
+
+
+def test_dashboard_and_alert_only_query_metrics_the_api_exposes(client):
+    import re
+
+    exposed = set(re.findall(r"^# TYPE (fraud_\w+) ", client.get("/metrics").text, re.MULTILINE))
+    dashboard = json.loads((REPO / "k8s/grafana/fraud-dashboard.json").read_text())
+    rules = yaml.safe_load((REPO / "k8s/prometheus/values.yaml").read_text())["serverFiles"]
+    exprs = [t["expr"] for p in dashboard["panels"] for t in p["targets"]]
+    exprs += [r["expr"] for g in rules["alerting_rules.yml"]["groups"] for r in g["rules"]]
+    names = [m for e in exprs for m in re.findall(r"fraud_\w+", e)]
+    used = {re.sub(r"_(bucket|count|sum)$", "", m) for m in names}
+    assert used and used <= exposed, used - exposed
+    assert len({p["id"] for p in dashboard["panels"]}) == len(dashboard["panels"])
 
 
 @pytest.mark.parametrize(

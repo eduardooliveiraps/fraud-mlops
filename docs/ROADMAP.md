@@ -12,7 +12,7 @@ Status: todo | design | in progress | review | done. One part in progress at a t
 | 5 | Training Job / CronJob on Kubernetes | done | 4 |
 | 6 | Scoring API (local) | done | 3, 4 |
 | 7 | Serving on Kubernetes: probes, HPA, rollback, load test | done | 5, 6 |
-| 8 | Monitoring: Prometheus, Grafana, PSI alert | todo | 7 |
+| 8 | Monitoring: Prometheus, Grafana, PSI alert | done | 7 |
 | 9 | CI/CD: image to GHCR, kind smoke test | todo | 7 |
 | 10 | Terraform (kind + helm) and final README | todo | all |
 | 10c | Optional: GCP Terraform module, validate only | decide after 10b | 10 |
@@ -71,7 +71,15 @@ Status: todo | design | in progress | review | done. One part in progress at a t
   (`fraud-api.fraud.svc.cluster.local:8000`, NodePort 30800 -> `localhost:8000`); HPA 2-4 pods
   at 70% CPU of a 250m request. `make rollback` = `kubectl rollout undo` (model and image).
 - **Third-party components**: pinned Helm charts with values in `k8s/<name>/values.yaml`
-  (metrics-server 3.14.0 now; Prometheus and Grafana in part 8; Terraform installs them in part 10).
+  (metrics-server 3.14.0, prometheus-community/prometheus 29.33.1, grafana-community/grafana
+  13.2.5; Terraform installs them in part 10). Charts follow the same 14-day cool-down.
+- **Monitoring** (`make monitoring`, namespace `monitoring`): Prometheus scrapes pods annotated
+  `prometheus.io/scrape: "true"` (+ `port`, `path`) every 15 s and holds rule `FraudScoreDrift`
+  (`max(fraud_score_psi) > 0.2` for 5m). `prometheus-server.monitoring.svc.cluster.local:9090`,
+  `localhost:9090`. Grafana `localhost:3000`, data source uid `prometheus`, dashboard uid
+  `fraud-api`. A test checks that every metric the dashboard and rule query is exposed by the API.
+- **Load-test payloads** (`loadtest/payloads.py`): `LOAD_DATA=synthetic` (default, CI) or `real`
+  (held-out months from the local Parquet, in memory only).
 
 ## RAM budget (measured in part 2)
 WSL memory cap: 10 GB (`.wslconfig`). Estimated peak: ~5-6.5 GB. Do not run the training Job
@@ -85,6 +93,8 @@ during load tests.
 | Training Job (pod, part 5) | 2 CPU, 1536Mi / 4 CPU, 2560Mi | ~1.15 GiB working set, ~60 s |
 | API pod, x2-4 (part 7) | 250m, 384Mi / 1 CPU, 768Mi | ~200 MiB; ~1 CPU (at limit) under load |
 | metrics-server (part 7) | chart defaults (100m, 200Mi) | - |
+| Prometheus (part 8) | 100m, 256Mi / 500m, 768Mi | ~55 MiB (2 scrape jobs, 2 days) |
+| Grafana (part 8) | 50m, 128Mi / 500m, 512Mi | ~210 MiB |
 
 Measured with `docker stats fraud-control-plane` and the pod's cgroup `memory.current`/`memory.peak`.
 Rebuilding the cluster from scratch (`cluster-down`, `cluster-up`, `mlflow-up`) takes ~2 min.
@@ -220,3 +230,19 @@ Format: date - decision - why - alternatives considered.
   kept-alive connections, and a client sending at that instant got a closed socket (3 of 31,650
   requests failed during a rollout + rollback). With draining: 0 of 31,938. No HTTP endpoint, so
   nobody outside the pod can trigger it. Alt: rely on client retries.
+- 2026-10-09 - No Alertmanager: the alert fires and is visible in Prometheus and Grafana, not
+  sent - No free notification channel; one pod and routing config less. In production:
+  Alertmanager -> Slack/PagerDuty. Alt: Alertmanager with a dummy receiver.
+- 2026-10-09 - No persistent volumes for Prometheus and Grafana - Local demo; Grafana holds no
+  state because data source and dashboard are provisioned from the repo (dashboards as code).
+- 2026-10-09 - `grafana-community/grafana` chart - `grafana/grafana` is deprecated (last release
+  January 2026). The 14-day cool-down applies to charts too.
+- 2026-10-09 - Prometheus scrapes only itself and annotated pods; all other default jobs off -
+  We use no node/cluster metrics (`kubectl top` comes from metrics-server); ~55 MiB of RAM.
+- 2026-10-09 - Anonymous read-only Grafana; admin password generated into a Secret - The
+  dashboard opens without login (localhost only); edits need the password (`make grafana-password`).
+- 2026-10-09 - Drift demo: real held-out months = normal, synthetic = shifted - Both measured
+  (PSI ~0.01 vs ~0.5), no invented noise. `real` mode works only where the data is (laptop).
+- 2026-10-09 - PSI covers each pod's last 1,000 scores, not a time window - Without traffic it
+  keeps its last value (and the alert keeps firing) until new traffic replaces the window.
+  Acceptable here; a time window would need storing timestamps per score.
