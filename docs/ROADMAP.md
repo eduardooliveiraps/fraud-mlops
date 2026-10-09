@@ -13,8 +13,8 @@ Status: todo | design | in progress | review | done. One part in progress at a t
 | 6 | Scoring API (local) | done | 3, 4 |
 | 7 | Serving on Kubernetes: probes, HPA, rollback, load test | done | 5, 6 |
 | 8 | Monitoring: Prometheus, Grafana, PSI alert | done | 7 |
-| 9 | CI/CD: image to GHCR, kind smoke test | done (PR path checked in part 10's PR) | 7 |
-| 10 | Terraform (kind + helm) and final README | review | all |
+| 9 | CI/CD: image to GHCR, kind smoke test | done | 7 |
+| 10 | Terraform (kind + helm) and final README | done | all |
 | 10c | Optional: GCP Terraform module, validate only | skipped | 10 |
 
 ## Contracts
@@ -287,3 +287,7 @@ Format: date - decision - why - alternatives considered.
   cannot see working; the README's "Production considerations" covers the GCP path instead.
 - 2026-10-09 - README rewritten for recruiters and engineers: highlights, tech stack, how the loop
   works, architecture diagram, results, key decisions, getting started; this file keeps the details.
+- 2026-10-09 - Part 10 verified in a pull request: lint-test 1.6 min, smoke 4.3 min on the Terraform
+  path; GHCR steps skipped on PRs (push only from main). A Make gotcha was caught there: an inline
+  comment on a variable line put spaces into the kind download URL, invisible locally because
+  kind was already installed - CI is the only place that starts from an empty machine.
