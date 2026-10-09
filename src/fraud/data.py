@@ -93,14 +93,32 @@ def make_synthetic(n_rows: int = 5000, seed: int = 0) -> pd.DataFrame:
     return df[COLUMNS]
 
 
+def write_synthetic(parquet_path: Path, n_rows: int) -> Path:
+    """Synthetic stand-in for the real Parquet (CI). Never overwrites an existing file."""
+    if parquet_path.exists():
+        raise FileExistsError(f"{parquet_path} exists; refusing to replace it with synthetic data")
+    parquet_path.parent.mkdir(parents=True, exist_ok=True)
+    make_synthetic(n_rows=n_rows).to_parquet(parquet_path, index=False)
+    logger.info("Wrote synthetic data %s (%d rows)", parquet_path, n_rows)
+    return parquet_path
+
+
 def main(argv: list[str] | None = None) -> None:
-    """Build the Parquet file from the raw CSV and log aggregate facts only."""
+    """Build the Parquet file from the raw CSV (or synthetic data) and log aggregates only."""
     parser = argparse.ArgumentParser(description="Convert BAF Base.csv to Parquet.")
     parser.add_argument("--config", type=Path, default=Path("configs/config.yaml"))
+    parser.add_argument(
+        "--synthetic", type=int, metavar="ROWS",
+        help="write ROWS synthetic rows instead (CI, where the real dataset never is)",
+    )
     args = parser.parse_args(argv)
 
     cfg = load_config(args.config)
-    df = load_base(csv_to_parquet(cfg.data.raw_csv, cfg.data.parquet))
+    if args.synthetic is not None:
+        path = write_synthetic(cfg.data.parquet, args.synthetic)
+    else:
+        path = csv_to_parquet(cfg.data.raw_csv, cfg.data.parquet)
+    df = load_base(path)
     months = df[TIME_COL]
     logger.info(
         "Fraud rate: %.4f, months %d-%d", df[TARGET].mean(), months.min(), months.max()

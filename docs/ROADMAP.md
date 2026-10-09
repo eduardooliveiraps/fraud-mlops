@@ -13,7 +13,7 @@ Status: todo | design | in progress | review | done. One part in progress at a t
 | 6 | Scoring API (local) | done | 3, 4 |
 | 7 | Serving on Kubernetes: probes, HPA, rollback, load test | done | 5, 6 |
 | 8 | Monitoring: Prometheus, Grafana, PSI alert | done | 7 |
-| 9 | CI/CD: image to GHCR, kind smoke test | todo | 7 |
+| 9 | CI/CD: image to GHCR, kind smoke test | review (awaiting GitHub run) | 7 |
 | 10 | Terraform (kind + helm) and final README | todo | all |
 | 10c | Optional: GCP Terraform module, validate only | decide after 10b | 10 |
 
@@ -78,6 +78,10 @@ Status: todo | design | in progress | review | done. One part in progress at a t
   (`max(fraud_score_psi) > 0.2` for 5m). `prometheus-server.monitoring.svc.cluster.local:9090`,
   `localhost:9090`. Grafana `localhost:3000`, data source uid `prometheus`, dashboard uid
   `fraud-api`. A test checks that every metric the dashboard and rule query is exposed by the API.
+- **CI** (`.github/workflows/ci.yml`): `lint-test` then `smoke` (fresh kind cluster, synthetic
+  data via `python -m fraud.data --synthetic N`, which refuses to overwrite an existing file;
+  ends with `make smoke` = `tests/test_live_api.py` against `localhost:8000`). On push to `main`:
+  `make push REGISTRY=ghcr.io/<owner>` -> `ghcr.io/<owner>/fraud-mlops:<git describe>`.
 - **Load-test payloads** (`loadtest/payloads.py`): `LOAD_DATA=synthetic` (default, CI) or `real`
   (held-out months from the local Parquet, in memory only).
 
@@ -246,3 +250,17 @@ Format: date - decision - why - alternatives considered.
 - 2026-10-09 - PSI covers each pod's last 1,000 scores, not a time window - Without traffic it
   keeps its last value (and the alert keeps firing) until new traffic replaces the window.
   Acceptable here; a time window would need storing timestamps per score.
+- 2026-10-09 - One CI job builds, smoke-tests in kind, then pushes - The pushed image is the one
+  that passed; no 1 GB image moves between jobs. Push only on `main`, never from PRs.
+- 2026-10-09 - CI runs the runbook's own `make` targets on a fresh machine - If CI is green, the
+  README commands work. Monitoring is not in CI (time, RAM); the dashboard/rule contract test
+  covers it. Alt: `helm/kind-action`.
+- 2026-10-09 - GitHub Actions pinned by commit SHA, 14-day cool-down like packages - Tags are
+  mutable, SHAs are not. Cost: manual SHA updates on upgrade.
+- 2026-10-09 - Image tag = `git describe --always --dirty` everywhere (`make image`, `make push`,
+  manifests), no `latest` - One way to name an image, traceable to a commit.
+- 2026-10-09 - CI makes `.state/mlflow` world-writable - The MLflow pod runs as uid 1000 (the
+  owner's laptop user); GitHub's runner user is uid 1001.
+- 2026-10-09 - Repository made public (portfolio) - GitHub Free: Actions minutes and package
+  storage are free and unlimited for public repos (private: 2,000 min/month, 500 MB, which the
+  237 MB image would fill in ~2 versions). History checked: no data was ever committed.

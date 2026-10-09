@@ -61,3 +61,15 @@ def test_main_builds_parquet_from_config(df, tmp_path, config_dict, write_config
     main(["--config", str(write_config(config_dict))])
 
     assert load_base(parquet_path).shape == df.shape
+
+
+def test_main_synthetic_writes_once_and_never_overwrites(tmp_path, config_dict, write_config):
+    parquet = tmp_path / "processed" / "base.parquet"
+    config_dict["data"]["parquet"] = str(parquet)
+    config = str(write_config(config_dict))
+
+    main(["--config", config, "--synthetic", "300"])
+    assert load_base(parquet).shape == (300, len(COLUMNS))
+
+    with pytest.raises(FileExistsError, match="refusing to replace"):
+        main(["--config", config, "--synthetic", "300"])  # e.g. the real Parquet on a laptop

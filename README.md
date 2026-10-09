@@ -1,5 +1,7 @@
 # fraud-mlops
 
+[![ci](https://github.com/eduardooliveiraps/fraud-mlops/actions/workflows/ci.yml/badge.svg)](https://github.com/eduardooliveiraps/fraud-mlops/actions/workflows/ci.yml)
+
 Fraud scoring service with a train → gate → deploy → monitor loop on a local kind cluster.
 Plan, status and design decisions: [docs/ROADMAP.md](docs/ROADMAP.md).
 
@@ -132,6 +134,19 @@ In the cluster (pods with 1 CPU each, laptop shared with Locust, MLflow and Dock
 | Before scale-out | 2 | 84 req/s | 325 ms | 0 |
 | After HPA scale-out | 4 | 134 req/s | 160 ms | 0 |
 | Rollout to v3 + rollback, under load | 4 | 134 req/s | 140 ms | 0 of 31,938 |
+
+## CI/CD
+
+`.github/workflows/ci.yml`, on every push and pull request:
+
+1. **lint-test**: `make install lint test` (unit tests use synthetic data only).
+2. **smoke** (after lint-test): the same `make` targets as the runbook, on a fresh kind cluster in
+   the CI machine: synthetic data (`python -m fraud.data --synthetic 20000`), MLflow, image,
+   training CronJob run once (validate, train, register, gate), deploy, live API checks
+   (`make smoke`). On `main` only, the image that passed is pushed to GHCR as
+   `ghcr.io/eduardooliveiraps/fraud-mlops:<short commit>` (no `latest`).
+
+Actions are pinned by commit SHA; the token is read-only except `packages: write` in the smoke job.
 
 ## Monitoring and drift
 

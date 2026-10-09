@@ -151,6 +151,16 @@ rollback:
 	$(KUBECTL) -n fraud rollout undo deployment/fraud-api
 	$(KUBECTL) -n fraud rollout status deployment/fraud-api --timeout 180s
 
+# Live checks against the API on localhost:8000 (also the last step of the CI smoke test).
+smoke:
+	SMOKE_URL=http://localhost:8000 .venv/bin/pytest -q tests/test_live_api.py
+
+# Tag and push the image, e.g. make push REGISTRY=ghcr.io/<owner> (CI does this on main).
+push:
+	@test -n "$(REGISTRY)" || { echo "Set REGISTRY, e.g. REGISTRY=ghcr.io/<owner>"; exit 1; }
+	docker tag $(IMAGE):$(IMAGE_TAG) $(REGISTRY)/$(IMAGE):$(IMAGE_TAG)
+	docker push $(REGISTRY)/$(IMAGE):$(IMAGE_TAG)
+
 # Headless Locust against localhost:8000: ramp 1 user/s to LOAD_USERS, run LOAD_TIME.
 LOAD_USERS := 50
 LOAD_TIME := 3m
@@ -174,4 +184,4 @@ mlflow-check:
 
 .PHONY: install lock lint test data train serve tools cluster-up cluster-down mlflow-up mlflow-check \
 	image train-deploy train-job metrics-server deploy rollback loadtest monitoring grafana-password \
-	drift-demo
+	drift-demo smoke push
