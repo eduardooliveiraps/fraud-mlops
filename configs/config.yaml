@@ -1,0 +1,5 @@
+# Single source of paths and settings. Relative paths are resolved from the working
+# directory (run commands from the repo root).
+data:
+  raw_csv: data/raw/Base.csv
+  parquet: data/processed/base.parquet

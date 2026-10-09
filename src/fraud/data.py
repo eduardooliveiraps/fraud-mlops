@@ -1,26 +1,34 @@
 """Load the BAF Base dataset and generate schema-matching synthetic data for tests/CI."""
 
+import argparse
+import logging
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+from fraud.config import load_config
 from fraud.schema import CATEGORICAL_COLS, COLUMNS, NUMERIC_COLS, TARGET, TIME_COL
 
-ROOT = Path(__file__).resolve().parents[2]
-RAW_CSV = ROOT / "data" / "raw" / "Base.csv"
-PARQUET = ROOT / "data" / "processed" / "base.parquet"
+logger = logging.getLogger(__name__)
 
 
-def csv_to_parquet(csv_path: Path = RAW_CSV, parquet_path: Path = PARQUET) -> Path:
+def csv_to_parquet(csv_path: Path, parquet_path: Path) -> Path:
     """Convert the raw CSV to Parquet (smaller on disk, keeps dtypes, much faster to load)."""
+    if not csv_path.is_file():
+        raise FileNotFoundError(
+            f"Raw CSV not found: {csv_path}. Download Base.csv from Kaggle (see README)."
+        )
     df = pd.read_csv(csv_path)
     parquet_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(parquet_path, index=False)
+    logger.info("Wrote %s (%d rows, %d columns)", parquet_path, *df.shape)
     return parquet_path
 
 
-def load_base(path: Path = PARQUET) -> pd.DataFrame:
+def load_base(path: Path) -> pd.DataFrame:
+    if not path.is_file():
+        raise FileNotFoundError(f"Parquet not found: {path}. Run `make data` first.")
     return pd.read_parquet(path)
 
 
@@ -85,10 +93,22 @@ def make_synthetic(n_rows: int = 5000, seed: int = 0) -> pd.DataFrame:
     return df[COLUMNS]
 
 
+def main(argv: list[str] | None = None) -> None:
+    """Build the Parquet file from the raw CSV and log aggregate facts only."""
+    parser = argparse.ArgumentParser(description="Convert BAF Base.csv to Parquet.")
+    parser.add_argument("--config", type=Path, default=Path("configs/config.yaml"))
+    args = parser.parse_args(argv)
+
+    cfg = load_config(args.config)
+    df = load_base(csv_to_parquet(cfg.data.raw_csv, cfg.data.parquet))
+    months = df[TIME_COL]
+    logger.info(
+        "Fraud rate: %.4f, months %d-%d", df[TARGET].mean(), months.min(), months.max()
+    )
+
+
 if __name__ == "__main__":
-    path = csv_to_parquet()
-    df = load_base(path)
-    print(f"Wrote {path}")
-    print("shape:", df.shape)
-    print(df.dtypes.to_string())
-    print(f"fraud rate: {df[TARGET].mean():.4f}")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
+    main()

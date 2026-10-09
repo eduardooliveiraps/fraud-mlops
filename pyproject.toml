@@ -6,10 +6,19 @@ build-backend = "setuptools.build_meta"
 name = "fraud-mlops"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["pandas", "numpy", "pyarrow", "scikit-learn", "lightgbm", "mlflow", "pyyaml"]
+# Supported ranges; exact versions live in requirements.lock (`make lock`).
+dependencies = [
+    "pandas>=3.0,<4",
+    "numpy>=2.4,<3",
+    "pyarrow>=25,<26",
+    "scikit-learn>=1.9,<2",
+    "lightgbm>=4.7,<5",
+    "mlflow>=3.16,<4",
+    "pyyaml>=6.0,<7",
+]
 
 [project.optional-dependencies]
-dev = ["pytest", "ruff", "jupyterlab", "matplotlib"]
+dev = ["pytest>=9.1,<10", "ruff>=0.16,<0.17", "ipykernel>=6,<8", "matplotlib>=3.10,<4"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

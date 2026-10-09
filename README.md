@@ -1,6 +1,20 @@
 # fraud-mlops
 
 Fraud scoring service with a train → gate → deploy → monitor loop on a local kind cluster.
+Plan, status and design decisions: [docs/ROADMAP.md](docs/ROADMAP.md).
+
+## Quickstart
+
+Requires Python 3.11 (Linux/WSL2).
+
+```bash
+make install   # create .venv from the pinned requirements.lock
+make lint      # ruff
+make test      # pytest, synthetic data only
+make data      # Base.csv -> Parquet (paths in configs/config.yaml)
+```
+
+`make lock` re-resolves the version ranges in `pyproject.toml` and rewrites `requirements.lock`.
 
 ## Dataset and license
 
