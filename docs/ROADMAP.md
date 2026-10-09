@@ -7,7 +7,7 @@ Status: todo | design | in progress | review | done. One part in progress at a t
 | 0 | Data loading, schema, synthetic data | done | - |
 | 1 | Foundations: config, pinned deps, logging, basic CI | done | 0 |
 | 2 | Cluster + MLflow spike (RAM check) | done | 1 |
-| 3 | Evaluation core: time split, metrics, threshold | todo | 1 |
+| 3 | Evaluation core: time split, metrics, threshold | done | 1 |
 | 4 | Training + gate (local, against cluster MLflow) | todo | 2, 3 |
 | 5 | Training Job / CronJob on Kubernetes | todo | 4 |
 | 6 | Scoring API (local) | todo | 3, 4 |
@@ -23,9 +23,12 @@ Status: todo | design | in progress | review | done. One part in progress at a t
 - **Data** (`fraud.data`): `csv_to_parquet(csv, parquet) -> Path`, `load_base(path) -> DataFrame`
   matching `fraud.schema`. `make_synthetic(n_rows, seed)` has the same schema and no real values.
   `make data` builds the Parquet from `configs/config.yaml`.
-- **Evaluation** (`fraud.split`, `fraud.metrics`): `time_split(df, cfg) -> train, valid, test`.
-  `evaluate(y, scores, cfg) -> {pr_auc, recall_at_fpr, ...}`.
-  `choose_threshold(y, scores, costs) -> float` (chosen on valid, reported on test).
+- **Split** (`fraud.split`): `time_split(df, cfg.split) -> Split(train, valid, test)`. Month order
+  train < valid < test is enforced by `SplitConfig`; an empty split fails.
+- **Metrics** (`fraud.metrics`): `choose_threshold(y_valid, s_valid, cfg.evaluation) -> float`
+  (may be `inf` = flag nothing). `evaluate(y_test, s_test, threshold, cfg.evaluation) ->`
+  `{pr_auc, recall_at_fpr, precision, recall, fpr, cost_per_1k}`; flagged = score >= threshold.
+  The gate compares `recall_at_fpr` and `pr_auc`. Baseline to beat: 0.198 / 0.037 (test months).
 - **Features** (`fraud.features`): one preprocessing function, used by both training and serving.
 - **Cluster** (`make tools cluster-up`): kind cluster `fraud`, kubectl context `kind-fraud`,
   namespace `fraud`. `make cluster-down` deletes it; MLflow data in `.state/mlflow/` survives.
@@ -100,3 +103,13 @@ Format: date - decision - why - alternatives considered.
   installed to `~/.local/bin` by `make tools` - Same versions everywhere, and a tampered or
   corrupted download fails instead of installing. Kubernetes v1.37.0 = kind's default node image.
   Alt: apt/snap packages (unpinned, versions vary by machine).
+- 2026-10-09 - PR-AUC as average precision - The trapezoid area under the PR curve
+  interpolates linearly and overstates the score when positives are rare. Alt: `auc(pr_curve)`.
+- 2026-10-09 - Recall at FPR counts only reachable thresholds (tied scores are never split) -
+  It reports what a real threshold can achieve, so it is slightly conservative. Alt: interpolate.
+- 2026-10-09 - One-feature baseline (`credit_risk_score`) - A model's number means little without
+  a trivial reference; this one is 0.198 recall at 5% FPR. Alt: no baseline.
+- 2026-10-09 - Monthly aggregates (rows, frauds, rate) in the README - Summary statistics, not
+  row-level data; they justify the split. Alt: keep EDA output local only.
+- 2026-10-09 - Fraud rate rises from ~0.9% (months 2-3) to 1.47% (month 7) - PR-AUC depends on
+  the fraud rate, so it is never compared across different months; the gate uses fixed test months.

@@ -53,12 +53,11 @@ def test_missing_parquet(tmp_path):
         load_base(tmp_path / "base.parquet")
 
 
-def test_main_builds_parquet_from_config(df, tmp_path):
+def test_main_builds_parquet_from_config(df, tmp_path, config_dict, write_config):
     csv_path, parquet_path = tmp_path / "Base.csv", tmp_path / "out" / "base.parquet"
     df.to_csv(csv_path, index=False)
-    config = tmp_path / "config.yaml"
-    config.write_text(f"data:\n  raw_csv: {csv_path}\n  parquet: {parquet_path}\n")
+    config_dict["data"] = {"raw_csv": str(csv_path), "parquet": str(parquet_path)}
 
-    main(["--config", str(config)])
+    main(["--config", str(write_config(config_dict))])
 
     assert load_base(parquet_path).shape == df.shape

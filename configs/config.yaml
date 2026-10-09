@@ -3,3 +3,15 @@
 data:
   raw_csv: data/raw/Base.csv
   parquet: data/processed/base.parquet
+
+# Time-based split by `month` (0-7): train on the past, test on the future.
+split:
+  train_months: [0, 1, 2, 3, 4]
+  valid_months: [5]  # early stopping and threshold choice
+  test_months: [6, 7]  # final metrics and the champion/challenger gate
+
+evaluation:
+  target_fpr: 0.05  # recall is reported at this false-positive rate (BAF paper benchmark)
+  # Assumed relative costs: a missed fraud costs 20x a false alarm (manual review).
+  cost_false_negative: 20.0
+  cost_false_positive: 1.0

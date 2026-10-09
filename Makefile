@@ -22,7 +22,7 @@ lock:
 	.venv-lock/bin/pip install -q -e ".[dev]"
 	.venv-lock/bin/pip freeze --exclude-editable > requirements.lock && rm -rf .venv-lock
 lint:
-	.venv/bin/ruff check src tests
+	.venv/bin/ruff check src tests notebooks
 test:
 	.venv/bin/pytest -q
 data:

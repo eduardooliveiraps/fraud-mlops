@@ -25,3 +25,7 @@ where = ["src"]
 
 [tool.ruff]
 line-length = 100
+
+[tool.ruff.lint.per-file-ignores]
+# Bad config file content is a ValueError (bad value), not a TypeError (caller bug).
+"src/fraud/config.py" = ["TRY004"]

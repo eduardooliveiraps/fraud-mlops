@@ -35,7 +35,29 @@ make cluster-down  # delete the cluster; MLflow data in .state/mlflow/ is kept
 | `localhost:5000` refuses connections | `kubectl -n fraud get pods` until `1/1 Running`. |
 | Start with an empty MLflow | `make cluster-down && rm -rf .state/mlflow && make cluster-up mlflow-up` |
 
-## Dataset and license
+## Data facts and evaluation
+
+Aggregates from `notebooks/01_eda.py` (1,000,000 applications, 32 columns, 1.10% fraud).
+
+| Month | Rows | Frauds | Fraud rate | Split |
+|------:|-----:|-------:|-----------:|-------|
+| 0 | 132,440 | 1,500 | 1.13% | train |
+| 1 | 127,620 | 1,198 | 0.94% | train |
+| 2 | 136,979 | 1,198 | 0.87% | train |
+| 3 | 150,936 | 1,392 | 0.92% | train |
+| 4 | 127,691 | 1,452 | 1.14% | train |
+| 5 | 119,323 | 1,411 | 1.18% | valid |
+| 6 | 108,168 | 1,450 | 1.34% | test |
+| 7 | 96,843 | 1,428 | 1.47% | test |
+
+- **Time-based split**: train on months 0-4, choose the threshold on month 5, report on 6-7.
+  The fraud rate rises in later months, so metrics are only compared on the same months.
+- **Metrics**: recall at 5% false-positive rate (the BAF paper's benchmark) and PR-AUC
+  (average precision). The decision threshold minimises an assumed cost of 20 per missed fraud
+  and 1 per false alarm (`configs/config.yaml`).
+- **Baseline** (rank by `credit_risk_score` alone, test months): recall at 5% FPR **0.198**,
+  PR-AUC **0.037** (a random ranking gives 0.05 and 0.014).
+
 
 - Uses the **Base** variant of the Bank Account Fraud (BAF) Dataset Suite: Jesus et al.,
   "Turning the Tables: Biased, Imbalanced, Dynamic Tabular Datasets for ML Evaluation",
